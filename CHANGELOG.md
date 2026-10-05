@@ -1,0 +1,82 @@
+# Changelog
+
+All notable changes to TCNYCSDL3Pad. Dates are YYYY-MM-DD.
+
+## [0.2.0] - 2026-10-05
+
+### Added
+- **Controller button prompts.** On-screen hints ("Press ... to Save Game", "Hold ... : Use Stove",
+  tutorial and loading-screen tips) now name controller buttons instead of keyboard keys.
+  - The game still builds every hint the console way, as a console pad button. The PC port only
+    turned that button into the name of the *default* keyboard key at the very last step
+    (`0x63ED90`). That step is replaced: button → game action → the controller button the ini puts
+    that action on → its name. Hints therefore follow your own remapping, which the original never did.
+  - Xbox names (A, B, X, Y, LB, RB, LT, RT, Back, Start, LS, RS) or PlayStation names (Cross, Circle,
+    Square, Triangle, L1, R1, L2, R2, Create, Options, L3, R3), picked from the controller in use.
+  - D-pad hints (weapon / combat-mode / song selection) show "D-pad Up/Down/Left/Right".
+  - Without a controller connected the original keyboard key names are shown.
+  - The function's bytes are checked before patching; on any other `tcnyc.exe` the log says
+    "Button prompts: NOT installed" and the game is left untouched.
+  - The log records each prompt type once (`Prompt: console button 0100 in on foot -> "Cross"`).
+- ini settings `ButtonPrompts` (0 = keyboard keys, 1 = controller names while a controller is
+  connected, 2 = always) and `ButtonNames` (`auto`, `xbox`, `playstation`).
+
+### Notes
+- Confirmed working in game on a DualSense.
+
+## [0.1.0] - 2026-10-05
+
+First release. Confirmed working in game (input and rumble) on a DualSense.
+
+### Why it was needed
+True Crime: New York City never reads a controller itself. It gives DirectInput's *action mapper*
+a list of requests ("any X axis", "any button 0..11", "any hat switch") laid out for an original
+Xbox pad, and lets Windows decide which physical control does what. On modern controllers that
+guessing goes wrong ("XInput controllers mapping is all over the place and can't be changed",
+PCGamingWiki):
+- the right stick's axes come out swapped or missing, so aiming is broken;
+- both triggers share one axis, so Target Lock and Fire cannot be held at the same time;
+- buttons 10 and 11 (Target Lock and Fire) do not exist on an XInput pad at all;
+- noisy analog input fills DirectInput's small event buffer, which can swallow button releases
+  (controls "locking up").
+
+### Added
+- **Virtual SDL3 controller.** Real controllers are hidden from the game's DirectInput and one
+  virtual controller is offered instead. When the game asks it to map its controls, every action is
+  placed directly on the matching SDL3 gamepad input. Works with Xbox, PlayStation, Switch and
+  most other controllers SDL3 supports.
+- **Original Xbox layout by default** (the game's readme asks for a pad that can "mimic an Xbox
+  controller" with 12 buttons; the Xbox's Black/White buttons become LB/RB):
+  left stick move, right stick aim, LT Target Lock, RT Fire, d-pad weapon/combat mode,
+  A/B/X/Y light attack / grapple / heavy attack / jump (accelerate / handbrake / brake / look behind
+  in vehicles), LB use, RB reload/block, Back badge/siren, Start pause/map, LS crouch, RS precision aim.
+- **Remapping** of every action, per mode (on foot, driving, menus), in `TCNYCSDL3Pad.ini`.
+  PlayStation button names are accepted (CROSS, L2, ...).
+- **Keyboard-only actions on the controller.** Actions the PC version only offered on the keyboard
+  (Stealth, previous/next combat mode, next weapons, Endo, Wheelie, camera modes, songs) can be put
+  on any spare button. The keyboard keeps its own binding for them.
+- **Rumble.** The game's force-feedback effect (one constant force whose direction carries the
+  left and right motor strength) drives the controller's motors through SDL3. `Rumble`,
+  `RumbleStrength` settings.
+- **No lost or stale input.** The virtual controller reports only what changed since the game last
+  read it, so the game's 10-events-per-frame limit can never drop a button release or build a
+  backlog. Taps shorter than one frame are still delivered.
+- **Hot-plug.** Controllers can be connected or swapped at any time; the controller pressed last is
+  the one in use.
+- **Foreground-only input** like the original DirectInput device; `InputInBackground` to change it.
+- Settings: `StickDeadzone` (radial, default 15% instead of the game's 25%), `TriggerThreshold`,
+  `InvertAimY`, `SwapSticks` (both gameplay-only, menus unaffected), `Enabled`, `LogInput`.
+- `TCNYCSDL3Pad.log`, rewritten on every launch: settings, layouts, controllers found, each control
+  set the game builds, rumble setup.
+- `SDL3.dll` is loaded at runtime from the game folder (or next to the plugin). If it is missing the
+  log says so and the game runs with keyboard and mouse as before.
+- Offline test program (`test/harness.c`) that loads the plugin and replays the game's exact
+  DirectInput calls with the action tables read from `tcnyc.exe`.
+
+### Technical
+- Hooks only `DINPUT8.dll!DirectInput8Create` in the exe's import table, then patches four slots
+  of the real `IDirectInput8A` function table in place (CreateDevice, EnumDevices, GetDeviceStatus,
+  EnumDevicesBySemantics) and acts only on DirectInput objects the game created. No game code is
+  patched by this version.
+- Keyboard and mouse mappings are unaffected (verified: 34 / 8 actions on foot, 32 / 7 driving,
+  25 / 7 menus). Keyboard table entries the controller borrows are handed back right after use.

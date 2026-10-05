@@ -1,0 +1,9 @@
+build/
+*.obj
+*.exe
+*.dll
+*.asi
+*.lib
+*.exp
+*.log
+test/TCNYCSDL3Pad.ini
