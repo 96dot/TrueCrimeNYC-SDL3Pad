@@ -1,0 +1,27 @@
+Nexus changelog entries (one block per version; paste each line as a change)
+
+0.4.1
+- Quit screen: answering No with Circle/B no longer also presses B in the menu behind it.
+- Quit screen: reopening it quickly can no longer confirm Yes by itself.
+- Quit screen buttons now work even with ButtonPrompts=0 (only the picture follows that setting).
+- Quick double presses are no longer lost when mashing.
+- Triggers no longer flicker when resting near the pull point.
+- Rumble moves straight to the next controller after one is unplugged.
+- Safer handling of the quit picture, the game's text and a broken SDL3.dll.
+- Read-me, licences and changelog now go in scripts\TCNYCSDL3Pad instead of the game folder.
+
+0.4.0
+- Quit screen works with a controller: Cross/A = Yes, Circle/B = No, and the picture shows those buttons.
+- The few hints written as keyboard keys ("Press ENTER") now name the controller button.
+- No longer tied to one exe: game code is found by pattern, and anything not found is switched off and logged.
+
+0.3.0
+- The game's hidden extra stick dead zone is removed (CancelGameDeadzone=1), so small stick movements count.
+- DiagInput troubleshooting mode for input problems.
+- Works alongside ThirteenAG's Widescreen Fix 2026-05-30 (set RawInputMouse = 0 in its ini).
+
+0.2.0
+- On-screen button prompts name controller buttons (Xbox or PlayStation names, chosen automatically) and follow your remapping.
+
+0.1.0
+- First release: SDL3 controller support with the original Xbox layout, analog aiming, Target Lock and Fire usable together, rumble, hot-plug and per-mode remapping.

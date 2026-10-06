@@ -50,6 +50,8 @@ Fixes from a full review of the plugin: automated checks, three independent read
     also the addresses found);
   - an offline replay of the game's DirectInput calls;
   - every setting's default kept in step across code, ini and README.
+- The release zip puts the read-me, changelog, licences and write-up in `scripts\TCNYCSDL3Pad\` instead
+  of the game folder, so removing that folder removes them too.
 - `test/build_test.bat` takes SDL3.dll from the game folder.
 - Readability: named constants for source kinds and control sets, compile-time checks on the button
   tables, and duplicate declarations removed.

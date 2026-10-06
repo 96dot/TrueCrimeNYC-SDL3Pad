@@ -34,7 +34,8 @@ each part was fixed.
 
 1. Install the recommended setup below (or at least the Ultimate ASI Loader).
 2. Extract the release zip into the game folder (next to `tcnyc.exe`). It adds
-   `scripts\TCNYCSDL3Pad.asi`, `scripts\TCNYCSDL3Pad.ini` and `SDL3.dll`.
+   `scripts\TCNYCSDL3Pad.asi`, `scripts\TCNYCSDL3Pad.ini` and `SDL3.dll`, plus this read-me, the
+   changelog and the licences in `scripts\TCNYCSDL3Pad\`.
 3. Start the game. `scripts\TCNYCSDL3Pad.log` is written on every launch.
 
 Once a controller is in use, the plugin also creates `scripts\TCNYCSDL3Pad\QuitGame_Xbox.pct`
