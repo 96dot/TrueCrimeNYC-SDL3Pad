@@ -2,6 +2,42 @@
 
 All notable changes to TCNYCSDL3Pad. Dates are YYYY-MM-DD.
 
+## [0.3.0] - 2026-10-05
+
+### Added
+- **`CancelGameDeadzone`** (on by default). The game applies its own dead zone to every stick read:
+  its axis reader (`0x40C900`) throws away the first 32 of 127 steps on each axis (about 25%) and
+  rescales the rest. At least 54 of its 61 call sites pass that value; a few pass smaller ones. Together with this plugin's own round
+  dead zone, roughly the first third of stick travel did nothing. The plugin now sends values that
+  start just past the game's threshold, so the game's rescale lands exactly on the plugin's
+  `StickDeadzone` and small stick movements register. `CancelGameDeadzone=0` restores the original feel.
+- **`DiagInput`** troubleshooting mode (off by default). Every 2 seconds it logs how often the game
+  reads the keyboard, mouse and controller, what DirectInput returns and how many events each device
+  delivers. It also logs the game's own merged button state, its current control set, the window its
+  input is bound to, which code path set DirectInput up, and a watchdog that records where the game's
+  main thread is if it stops reading input for more than 1.5 s.
+- Log lines carry the process id and module address, so two copies of the game or plugin can be
+  told apart.
+- `gfxdiag/TCNYCGfxDiag.asi`, a separate diagnostic plugin used to investigate performance (not part
+  of the release): Direct3D 8 texture formats and failures, render-target creators, frame times, time
+  spent waiting in Present, and main-thread CPU use.
+- `docs/HOW-IT-WAS-FIXED.md`: a full write-up of the investigation and every fix.
+- `licenses/SDL3-LICENSE.txt`.
+
+### Recommended setup (documented in the README)
+Measured on the author's machine (RX 9070 XT, 3840x2160 at 60 Hz) while driving through the city:
+
+| Setup | Driving frame rate |
+|---|---|
+| Old widescreen fix (Direct3D 8, native 30 fps cap) | 29-30 fps |
+| ThirteenAG widescreen fix 2026-05-30 (60 fps mode, dxwrapper to Direct3D 9) | 37-55 fps |
+| Same, plus DXVK for Direct3D 9 | 56-60 fps once warmed up |
+
+### Notes
+- Works alongside ThirteenAG's widescreen fix (2026-05-30). Its `RawInputMouse` option should be `0`:
+  with it on, the mouse turned the camera behind the main menu and the cursor disappeared.
+- Confirmed working in game on a DualSense.
+
 ## [0.2.0] - 2026-10-05
 
 ### Added

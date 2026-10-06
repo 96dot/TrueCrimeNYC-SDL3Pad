@@ -21,23 +21,29 @@
 #include <ctype.h>
 #include "sdl3_min.h"
 
-#define VERSION "0.2"
+#define VERSION "0.3"
 
 // ---------------------------------------------------------------------------------------------
 // settings and log
 // ---------------------------------------------------------------------------------------------
-static char g_dir[MAX_PATH], g_log[MAX_PATH], g_ini[MAX_PATH];
+static char g_dir[MAX_PATH], g_log[MAX_PATH], g_ini[MAX_PATH], g_logTag[48];
 static CRITICAL_SECTION g_cs;
-static int g_enabled = 1, g_rumbleOn = 1, g_logInput = 0, g_invertAimY = 0, g_swapSticks = 0, g_bgInput = 0;
+static int g_enabled = 1, g_rumbleOn = 1, g_logInput = 0, g_invertAimY = 0, g_swapSticks = 0, g_bgInput = 0, g_cancelGameDz = 1;
 static float g_deadzone = 0.15f, g_trigThreshold = 0.30f, g_rumbleScale = 1.0f;
 
 static void logf_(const char *fmt, ...) {
     FILE *f = fopen(g_log, "a"); if (!f) return;
     SYSTEMTIME st; GetLocalTime(&st);
     fprintf(f, "[%02d:%02d:%02d.%03d] ", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    if (g_logTag[0]) fputs(g_logTag, f);
     va_list a; va_start(a, fmt); vfprintf(f, fmt, a); va_end(a);
     fputc('\n', f); fclose(f);
 }
+
+struct DiagDev;
+static struct DiagDev *diag_add(void *dev, const char *name);
+static void diag_count(void *dev, HRESULT hr, DWORD n);
+static int g_diagOn;
 
 // ---------------------------------------------------------------------------------------------
 // controller inputs ("sources") the game's actions can be placed on
@@ -339,7 +345,14 @@ static LONG axis_value(const PadSnap *s, int idx, LONG amin, LONG amax) {
     if (idx == AX_LT || idx == AX_RT) v = amin + s->axis[idx] * (double)(amax - amin);
     else {
         float f = idx == AX_RY_INV ? -s->axis[AX_RY] : s->axis[idx];
-        v = (amin + amax) / 2.0 + f * (amax - amin) / 2.0;
+        double half = (amax - amin) / 2.0;
+        // The game throws away the first 32/127 of every stick axis (0x40C900) and rescales the rest.
+        // Start just past that point so the game's rescale lands exactly on our own (round) dead zone.
+        if (g_cancelGameDz && f != 0.f) {
+            double dz = half * (32.0 / 127.0), m = fabs(f);
+            f = (float)((f < 0 ? -1.0 : 1.0) * (dz + m * (half - dz)) / half);
+        }
+        v = (amin + amax) / 2.0 + f * half;
     }
     if (v < amin) v = amin;
     if (v > amax) v = amax;
@@ -527,9 +540,10 @@ static HRESULT STDMETHODCALLTYPE d_GetDeviceData(IDirectInputDevice8A *This, DWO
     Dev *d = DEV; PadSnap s; DWORD max, n = 0; int k, peek = (flags & DIGDD_PEEK) != 0, stop = 0;
     Bind save[MAXBIND];
     if (!inout || (cb != sizeof(DIDEVICEOBJECTDATA) && cb != sizeof(DIDEVICEOBJECTDATA_DX3))) return DIERR_INVALIDPARAM;
-    if (!d->acquired) return DIERR_NOTACQUIRED;
+    if (g_diagOn) diag_add(This, "SDL3 controller");
+    if (!d->acquired) { diag_count(This, DIERR_NOTACQUIRED, 0); return DIERR_NOTACQUIRED; }
     max = buf ? *inout : 0xFFFFFFFF;
-    if (!d->nbind) { *inout = 0; return DI_OK; }
+    if (!d->nbind) { *inout = 0; diag_count(This, DI_OK, 0); return DI_OK; }
     if (peek) memcpy(save, d->bind, sizeof(Bind) * d->nbind);
     get_snap(&s);
     // Report each mapped control whose value differs from what the game last saw. Nothing queues up,
@@ -557,6 +571,7 @@ static HRESULT STDMETHODCALLTYPE d_GetDeviceData(IDirectInputDevice8A *This, DWO
     }
     if (peek) memcpy(d->bind, save, sizeof(Bind) * d->nbind);
     *inout = n;
+    diag_count(This, DI_OK, n);
     return DI_OK;   // nothing is ever lost: whatever did not fit is reported on the next read
 }
 static HRESULT STDMETHODCALLTYPE d_SetDataFormat(IDirectInputDevice8A *This, LPCDIDATAFORMAT f) {
@@ -815,10 +830,120 @@ static BOOL CALLBACK filter_cb(LPCDIDEVICEINSTANCEA inst, LPVOID ref) {
     if (c->cb(inst, c->ref) == DIENUM_STOP) { c->stopped = 1; return DIENUM_STOP; }
     return DIENUM_CONTINUE;
 }
+// ---- input diagnostics (DiagInput=1): how often the game reads each device and what it gets ----
+typedef struct DiagDev { void *dev; char name[24]; volatile LONG calls, ok, fail, events, acq, acqFail; volatile HRESULT lastErr; } DiagDev;
+static DiagDev g_diag[12]; static volatile LONG g_ndiag;
+static DiagDev *diag_find(void *dev) { LONG i; for (i = 0; i < g_ndiag; i++) if (g_diag[i].dev == dev) return &g_diag[i]; return NULL; }
+static DiagDev *diag_add(void *dev, const char *name) {
+    DiagDev *d = diag_find(dev);
+    if (d || g_ndiag >= 12) return d;
+    d = &g_diag[g_ndiag]; d->dev = dev; lstrcpynA(d->name, name, sizeof d->name);
+    InterlockedIncrement(&g_ndiag);
+    return d;
+}
+static HRESULT (STDMETHODCALLTYPE *o_RGetDeviceData)(IDirectInputDevice8A *, DWORD, LPDIDEVICEOBJECTDATA, LPDWORD, DWORD);
+static HRESULT (STDMETHODCALLTYPE *o_RAcquire)(IDirectInputDevice8A *);
+static volatile DWORD g_inputThread;      // thread the game reads input on (its main loop)
+static volatile LONG g_totalReads;
+static void diag_count(void *dev, HRESULT hr, DWORD n) {
+    DiagDev *d = diag_find(dev);
+    if (!d) return;
+    g_inputThread = GetCurrentThreadId(); InterlockedIncrement(&g_totalReads);
+    InterlockedIncrement(&d->calls);
+    if (SUCCEEDED(hr)) { InterlockedIncrement(&d->ok); InterlockedExchangeAdd(&d->events, (LONG)n); }
+    else { InterlockedIncrement(&d->fail); d->lastErr = hr; }
+}
+static HRESULT STDMETHODCALLTYPE h_RGetDeviceData(IDirectInputDevice8A *This, DWORD cb, LPDIDEVICEOBJECTDATA buf, LPDWORD inout, DWORD flags) {
+    HRESULT hr = o_RGetDeviceData(This, cb, buf, inout, flags);
+    diag_count(This, hr, inout ? *inout : 0);
+    return hr;
+}
+static HRESULT STDMETHODCALLTYPE h_RAcquire(IDirectInputDevice8A *This) {
+    HRESULT hr = o_RAcquire(This); DiagDev *d = diag_find(This);
+    if (d) { InterlockedIncrement(&d->acq); if (FAILED(hr)) { InterlockedIncrement(&d->acqFail); d->lastErr = hr; } }
+    return hr;
+}
+static int g_diagOn;
+static void patch_slot(void **slot, void *hook, void **orig);
+// Watchdog: when the game stops reading input, look at where its main thread is. The thread is
+// paused only long enough to copy its registers and stack; names are looked up after it resumes.
+static void describe_addr(DWORD a, char *out, int n) {
+    HMODULE m = NULL; char path[MAX_PATH]; const char *b;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)(UINT_PTR)a, &m) || !m) { snprintf(out, n, "%08lX", a); return; }
+    GetModuleFileNameA(m, path, MAX_PATH); b = strrchr(path, '\\'); b = b ? b + 1 : path;
+    if (m == GetModuleHandleA(NULL)) snprintf(out, n, "tcnyc+%06lX(%08lX)", a - (DWORD)(UINT_PTR)m, a);
+    else snprintf(out, n, "%s+%lX", b, a - (DWORD)(UINT_PTR)m);
+}
+static int is_code_addr(DWORD a) {
+    MEMORY_BASIC_INFORMATION mbi;
+    if (a < 0x10000 || !VirtualQuery((void *)(UINT_PTR)a, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT || mbi.Type != MEM_IMAGE) return 0;
+    return (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
+}
+static void sample_main_thread(int k) {
+    HANDLE t = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, g_inputThread);
+    CONTEXT c; DWORD stack[1024]; SIZE_T got = 0; char line[1400], nm[96]; int len, i, hits = 0;
+    if (!t) { logf_("watchdog: cannot open the game thread (error %lu)", GetLastError()); return; }
+    memset(&c, 0, sizeof c); c.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+    if (SuspendThread(t) == (DWORD)-1) { CloseHandle(t); return; }
+    GetThreadContext(t, &c);
+    ReadProcessMemory(GetCurrentProcess(), (void *)(UINT_PTR)c.Esp, stack, sizeof stack, &got);
+    ResumeThread(t); CloseHandle(t);
+    describe_addr(c.Eip, nm, sizeof nm);
+    len = snprintf(line, sizeof line, "watchdog sample %d: game thread at %s; stack:", k, nm);
+    for (i = 0; i < (int)(got / 4) && hits < 20 && len < (int)sizeof line - 100; i++)
+        if (is_code_addr(stack[i])) { describe_addr(stack[i], nm, sizeof nm); len += snprintf(line + len, sizeof line - len, " %s", nm); hits++; }
+    logf_("%s", line);
+}
+static DWORD WINAPI DiagThread(LPVOID arg) {
+    DWORD last = 0xFFFFFFFF, lastReport = GetTickCount(), lastSet = 0xFFFFFFFF, lastWnd = 0xFFFFFFFF; int lines = 0;
+    (void)arg;
+    for (;;) {
+        DWORD now = GetTickCount(), bits = *(volatile DWORD *)0x0084A904;
+        DWORD set = *(volatile DWORD *)0x0075CCC0, wnd = *(volatile DWORD *)0x00793380, mgr = *(volatile DWORD *)0x0084A8D0;
+        static DWORD lastMgr = 0xFFFFFFFF;
+        if (mgr != lastMgr) { logf_("game control manager now %08lX", mgr); lastMgr = mgr; }
+        if (bits != last && lines < 400) { logf_("game button state %08lX", bits); last = bits; lines++; }
+        {   // watchdog
+            static LONG seenReads; static DWORD lastReadAt; static int stalls, samples;
+            LONG r = g_totalReads;
+            if (r != seenReads) { if (stalls) logf_("watchdog: game is reading input again"); seenReads = r; lastReadAt = now; stalls = 0; }
+            else if (r && g_inputThread && now - lastReadAt > 1500 && samples < 12 && stalls < 3) {
+                if (!stalls) logf_("watchdog: game has not read input for %lu ms", now - lastReadAt);
+                sample_main_thread(++samples); stalls++; lastReadAt = now - 1200;   // next sample in ~300 ms
+            }
+        }
+        if (set != lastSet) { logf_("game control set now %lu (%s)", set, set < 3 ? g_modes[set].label : "?"); lastSet = set; }
+        if (wnd != lastWnd) {
+            char cls[64] = "", title[64] = "";
+            if (wnd) { GetClassNameA((HWND)(UINT_PTR)wnd, cls, sizeof cls); GetWindowTextA((HWND)(UINT_PTR)wnd, title, sizeof title); }
+            logf_("game input window now %08lX (class \"%s\", title \"%s\", exists %d)", wnd, cls, title, wnd ? IsWindow((HWND)(UINT_PTR)wnd) : 0);
+            lastWnd = wnd;
+        }
+        if (now - lastReport >= 2000) {
+            LONG i;
+            for (i = 0; i < g_ndiag; i++) {
+                DiagDev *d = &g_diag[i];
+                logf_("diag %-22s reads %ld ok %ld fail %ld events %ld acquire %ld (failed %ld) last error %08lX",
+                      d->name, InterlockedExchange(&d->calls, 0), InterlockedExchange(&d->ok, 0), InterlockedExchange(&d->fail, 0),
+                      InterlockedExchange(&d->events, 0), InterlockedExchange(&d->acq, 0), InterlockedExchange(&d->acqFail, 0), (DWORD)d->lastErr);
+            }
+            logf_("diag round-robin index %lu of %lu, foreground is game: %d",
+                  *(volatile DWORD *)0x0084A940, *(volatile DWORD *)0x0084A944, game_has_focus());
+            lastReport = now;
+        }
+        Sleep(5);
+    }
+}
 static BOOL CALLBACK filter_sem_cb(LPCDIDEVICEINSTANCEA inst, LPDIRECTINPUTDEVICE8A dev, DWORD fl, DWORD remaining, LPVOID ref) {
     EnumCtx *c = ref;
     if (is_pad_type(inst->dwDevType)) { c->hidden++; return DIENUM_CONTINUE; }
     c->passed++;
+    if (g_diagOn && dev) {
+        IDirectInputDevice8AVtbl *vt = (IDirectInputDevice8AVtbl *)dev->lpVtbl;
+        diag_add(dev, inst->tszInstanceName);
+        patch_slot((void **)&vt->GetDeviceData, (void *)h_RGetDeviceData, (void **)&o_RGetDeviceData);
+        patch_slot((void **)&vt->Acquire, (void *)h_RAcquire, (void **)&o_RAcquire);
+    }
     if (c->scb(inst, dev, fl, remaining + 1, c->ref) == DIENUM_STOP) { c->stopped = 1; return DIENUM_STOP; }
     return DIENUM_CONTINUE;
 }
@@ -885,6 +1010,20 @@ static HRESULT WINAPI h_DI8Create(HINSTANCE inst, DWORD ver, REFIID iid, LPVOID 
         patch_slot((void **)&vt->GetDeviceStatus, (void *)h_GetDeviceStatus, (void **)&o_GetDeviceStatus);
         patch_slot((void **)&vt->EnumDevicesBySemantics, (void *)h_EnumBySem, (void **)&o_EnumBySem);
         if (logs++ < 4) logf_("DirectInput created by the game - hooks in place");
+        if (g_diagOn) {   // which game code path set input up: look for its known return addresses on the stack
+            static const struct { DWORD ret; const char *what; } sites[] = {
+                {0x0049BEDD, "game start-up"}, {0x00651C2E, "setup dialog opening"}, {0x006520FC, "reset-controls message box"},
+                {0x0063DD90, "rumble device set-up"}, {0x00645D5B, "control manager set-up"},
+            };
+            DWORD *sp = (DWORD *)&hr, *top = sp + 4096; char line[300]; int len = 0; unsigned i;
+            MEMORY_BASIC_INFORMATION mbi;
+            if (VirtualQuery(sp, &mbi, sizeof mbi)) { DWORD *end = (DWORD *)((BYTE *)mbi.BaseAddress + mbi.RegionSize); if (top > end) top = end; }
+            for (; sp < top && len < 260; sp++)
+                for (i = 0; i < sizeof sites / sizeof sites[0]; i++)
+                    if (*sp == sites[i].ret) len += snprintf(line + len, sizeof line - len, " [%s]", sites[i].what);
+            line[len] = 0;
+            logf_("diag DirectInput8Create called by:%s", len ? line : " (unknown path)");
+        }
     } else if (logs++ < 4) logf_("DirectInput8Create: hr=%08lX, not the interface we handle", hr);
     return hr;
 }
@@ -997,6 +1136,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         snprintf(g_log, MAX_PATH, "%sTCNYCSDL3Pad.log", g_dir);
         snprintf(g_ini, MAX_PATH, "%sTCNYCSDL3Pad.ini", g_dir);
         DeleteFileA(g_log);
+        snprintf(g_logTag, sizeof g_logTag, "(pid %lu, module %p) ", GetCurrentProcessId(), (void *)h);
         g_enabled     = GetPrivateProfileIntA("Settings", "Enabled", 1, g_ini);
         g_rumbleOn    = GetPrivateProfileIntA("Settings", "Rumble", 1, g_ini);
         g_rumbleScale = ini_pct("RumbleStrength", 100, 0, 200);
@@ -1006,14 +1146,16 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         g_swapSticks  = GetPrivateProfileIntA("Settings", "SwapSticks", 0, g_ini);
         g_bgInput     = GetPrivateProfileIntA("Settings", "InputInBackground", 0, g_ini);
         g_logInput    = GetPrivateProfileIntA("Settings", "LogInput", 0, g_ini);
+        g_diagOn      = GetPrivateProfileIntA("Settings", "DiagInput", 0, g_ini);
+        g_cancelGameDz = GetPrivateProfileIntA("Settings", "CancelGameDeadzone", 1, g_ini);
         g_promptMode  = GetPrivateProfileIntA("Settings", "ButtonPrompts", 1, g_ini);
         {
             char v[32];
             GetPrivateProfileStringA("Settings", "ButtonNames", "auto", v, sizeof v, g_ini);
             g_promptNames = !_strnicmp(v, "x", 1) ? 1 : !_strnicmp(v, "p", 1) ? 2 : 0;
         }
-        logf_("TCNYCSDL3Pad v" VERSION " loaded. Rumble=%d StickDeadzone=%d%% TriggerThreshold=%d%% InvertAimY=%d SwapSticks=%d",
-              g_rumbleOn, (int)(g_deadzone * 100 + .5f), (int)(g_trigThreshold * 100 + .5f), g_invertAimY, g_swapSticks);
+        logf_("TCNYCSDL3Pad v" VERSION " loaded. Rumble=%d StickDeadzone=%d%% CancelGameDeadzone=%d TriggerThreshold=%d%% InvertAimY=%d SwapSticks=%d",
+              g_rumbleOn, (int)(g_deadzone * 100 + .5f), g_cancelGameDz, (int)(g_trigThreshold * 100 + .5f), g_invertAimY, g_swapSticks);
         if (!g_enabled) { logf_("Enabled=0 - doing nothing"); return TRUE; }
         load_maps();
         for (m = 0; m < 3; m++) {
@@ -1033,6 +1175,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
             logf_("DirectInput hook: installed");
             install_prompts();
             CreateThread(NULL, 0, Worker, NULL, 0, NULL);
+            if (g_diagOn) { logf_("Input diagnostics on (DiagInput=1)"); CreateThread(NULL, 0, DiagThread, NULL, 0, NULL); }
         }
     }
     return TRUE;
