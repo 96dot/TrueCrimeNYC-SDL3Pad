@@ -1,0 +1,119 @@
+[size=5][b]TCNYCSDL3Pad - Proper Controller Support[/b][/size]
+[i]Marcus Reed finally gets a right stick that does what it says on the tin.[/i]
+
+Plug in pretty much any modern controller (Xbox, PlayStation, Switch Pro and friends) and True Crime: New York City plays the way the console version did: aim with the right stick, lock on with the left trigger, fire with the right, and feel it rumble when things go loud. Button hints on screen name your actual buttons, even the quit screen.
+
+One drop-in plugin. No background apps, no hotkeys to remember, no hand-mapping controls from screenshots.
+
+[size=4][b]Why the controls were all over the place[/b][/size]
+The PC version never reads your controller itself. It hands Windows a wish list ("any X axis, any button number 10, any hat switch...") laid out for an [b]original Xbox pad[/b] and lets DirectInput play matchmaker. On a modern pad, the matchmaking goes badly:
+[list]
+[*]the right stick lands on the wrong axes, so aiming goes sideways (sometimes literally);
+[*]both triggers share one axis, so you can't hold Target Lock and Fire at the same time;
+[*]"button 10" and "button 11" (Target Lock and Fire) don't exist on today's pads at all.
+[/list]
+This plugin skips the matchmaking. It gives the game one virtual controller, read through [b]SDL3[/b], and puts every action exactly where it belongs.
+
+[size=4][b]Features[/b][/size]
+[list]
+[*][b]Correct controls[/b] in the original Xbox layout (Black and White became LB and RB).
+[*][b]Analog right-stick aiming[/b], and Target Lock and Fire on the triggers, usable together.
+[*][b]Rumble[/b] from the game's own force feedback.
+[*][b]Button prompts[/b]: "Press Create to Show Badge" instead of "Press 'Q' to Show Badge". Xbox or PlayStation names are picked automatically, and they follow your remapping.
+[*][b]Quit screen[/b] answers to Cross/A (Yes) and Circle/B (No), and shows those buttons instead of "Y/N".
+[*][b]The game's hidden extra stick dead zone removed[/b]. The game threw away the first quarter of each stick axis on top of any dead zone; small movements now count.
+[*][b]Fully remappable[/b] per mode (on foot, driving, menus) in a plain ini file. Spare buttons can even take keyboard-only actions like Stealth, Endo and Wheelie.
+[*][b]Hot-plug[/b]: connect or swap controllers any time; the last one you pressed is in charge.
+[*][b]No lost or stuck buttons[/b]: the game only reads 10 input events per frame, and the plugin never queues more than it needs to.
+[*][b]Not tied to one exe[/b]: game code is found by pattern at startup, and anything not found is switched off and named in the log instead of crashing.
+[/list]
+
+[size=4][b]Requirements[/b][/size]
+[list]
+[*]True Crime: New York City (PC).
+[*][b]Ultimate ASI Loader[/b], which loads the plugin. The easy way to get it is [b]ThirteenAG's Widescreen Fix[/b] (2026-05-30 or newer), which includes it and adds 60 fps and widescreen. [url=https://github.com/ThirteenAG/WidescreenFixesPack/releases/tag/truecrimenyc]GitHub release[/url]
+[*]SDL3.dll (32-bit) is included.
+[/list]
+
+[size=4][b]Installation[/b][/size]
+[list=1]
+[*]Install ThirteenAG's Widescreen Fix.
+[*]Extract this archive into the game folder (the one with [b]tcnyc.exe[/b]). You'll get [b]scripts\TCNYCSDL3Pad.asi[/b], [b]scripts\TCNYCSDL3Pad.ini[/b] and [b]SDL3.dll[/b].
+[*]Play. A log appears at [b]scripts\TCNYCSDL3Pad.log[/b] if you're curious.
+[/list]
+To uninstall, delete those files and the [b]scripts\TCNYCSDL3Pad[/b] folder.
+
+[size=4][b]Recommended: a smooth 60 fps while driving[/b][/size]
+Optional, but tested and worth it:
+[list]
+[*][b]DXVK[/b]: copy its 32-bit [b]d3d9.dll[/b] next to tcnyc.exe ([url=https://github.com/doitsujin/dxvk/releases]DXVK releases[/url]).
+[*]In [b]scripts\TrueCrimeNewYorkCity.WidescreenFix.ini[/b]:
+[list]
+[*][b]RawInputMouse = 0[/b] (otherwise the mouse steers the camera behind the main menu);
+[*][b]FrameLimitType = -1[/b] if your display runs at 60 Hz;
+[*][b]Bloom = 0[/b] and [b]DistantBlur = 0[/b] for a cleaner picture;
+[*][b]ConsoleGamma = 1[/b] and [b]AntiAliasing = 1[/b] to taste.
+[/list]
+[/list]
+Measured while driving through the city (RX 9070 XT, 4K, 60 Hz):
+[list]
+[*]Old fix, original renderer: [b]29-30 fps[/b] (the game's own cap)
+[*]New widescreen fix: [b]37-55 fps[/b], choppy in traffic
+[*]New widescreen fix + DXVK: [b]56-60 fps[/b] once warmed up
+[/list]
+DXVK may stutter for a moment the first time it sees a new effect. The graphics driver caches what it builds, so this should ease off in later sessions.
+
+[size=4][b]Default controls[/b][/size]
+[list]
+[*][b]Left stick[/b]: move / steer
+[*][b]Right stick[/b]: aim / look
+[*][b]D-pad[/b]: weapon and combat mode (on foot), weapon and song (driving)
+[*][b]A / Cross[/b]: light attack / accelerate / select
+[*][b]B / Circle[/b]: grapple / handbrake / back
+[*][b]X / Square[/b]: heavy attack / brake and reverse
+[*][b]Y / Triangle[/b]: jump / look behind
+[*][b]LB / L1[/b]: use and action / car door
+[*][b]RB / R1[/b]: reload and block / reload
+[*][b]LT / L2[/b]: target lock
+[*][b]RT / R2[/b]: fire
+[*][b]Back / Create[/b]: badge and warning shot / siren and horn
+[*][b]Start / Options[/b]: pause and map
+[*][b]L3[/b]: crouch, [b]R3[/b]: precision aim
+[/list]
+Everything can be changed in [b]scripts\TCNYCSDL3Pad.ini[/b], which also has settings for dead zone, aim inversion, swapping sticks, rumble strength and prompt style.
+
+[size=4][b]How this compares with Controller-Prompts[/b][/size]
+There's another controller mod here, [b]Controller-Prompts[/b] by josh2367, and it's a good-hearted project with the same goal: you, a couch, a pad. Both are perfectly valid ways to play; they just take different roads.
+[list]
+[*][b]Controller-Prompts[/b] patches the game's language files with button names, sets up DualSense controls through DirectInput's own saved mappings, and uses a small companion app that turns the right stick and a few buttons into mouse and keyboard input. It never touches the game's code, which some players prefer. Xbox players map controls by hand from its screenshots.
+[*][b]This mod[/b] replaces the controller layer itself. Every action is mapped natively (analog aiming, real triggers, rumble) for any controller SDL3 knows. Prompts are switched while the game runs, so keyboard players still see keyboard keys when no pad is connected. There's nothing to keep running in the background.
+[/list]
+In short: if you'd rather nothing hooks the game's code, Controller-Prompts is a fine choice. If you want plug-in-and-play for any pad, with rumble and analog aim, try this one.
+[b]Please use one or the other, not both.[/b] Two input mods arguing over one controller is how Marcus ends up shooting the hot dog vendor.
+
+[size=4][b]Known issues[/b][/size]
+[list]
+[*]Some walls show soft dark blobs. Those are shadows the game projects a little too far. The game does this on its own, with or without this mod.
+[*]Text tweaks ("Press ENTER" becomes "Press Cross") only match the English wording, and "Press ENTER" has not been spotted in game yet. Button prompts use English button names in every language; only English has been tested.
+[*]Tested on the original SafeDisc retail build with a DualSense. Other builds and pads should work; if one doesn't, the log will say which part wasn't found.
+[/list]
+
+[size=4][b]Troubleshooting[/b][/size]
+Open [b]scripts\TCNYCSDL3Pad.log[/b]:
+[list]
+[*]No log at all: the ASI loader isn't running. Reinstall the Widescreen Fix.
+[*]"SDL3.dll NOT found": put the included SDL3.dll next to tcnyc.exe.
+[*]"Controller connected: ..." shows what was detected. "Controls set: on foot (17 actions...)" means the game accepted it.
+[*]Input acting oddly? Set [b]DiagInput=1[/b] in the ini, reproduce it, and post the log in the comments.
+[/list]
+
+[size=4][b]Credits and licences[/b][/size]
+[list]
+[*]This mod: MIT licence.
+[*][url=https://www.libsdl.org/]SDL[/url] (zlib), included as SDL3.dll.
+[*]ThirteenAG for the [url=https://github.com/ThirteenAG/WidescreenFixesPack]Widescreen Fix[/url] and [url=https://github.com/ThirteenAG/Ultimate-ASI-Loader]Ultimate ASI Loader[/url] (MIT). Required, not included.
+[*][url=https://github.com/elishacloud/dxwrapper]dxwrapper[/url] by elishacloud, bundled with the Widescreen Fix.
+[*][url=https://github.com/doitsujin/dxvk]DXVK[/url] (zlib). Recommended, not included.
+[*]josh2367, for showing the community wanted this.
+[/list]
+The quit-screen picture is drawn on your own PC from your own game files, so no game artwork is included in this download.

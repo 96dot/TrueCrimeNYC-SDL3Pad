@@ -21,7 +21,7 @@
 #include <ctype.h>
 #include "sdl3_min.h"
 
-#define VERSION "0.4"
+#define VERSION "0.4.1"
 
 // ---------------------------------------------------------------------------------------------
 // settings and log
@@ -46,6 +46,7 @@ static void diag_count(void *dev, HRESULT hr, DWORD n);
 static int g_diagOn;
 static void text_update(void); static void quit_pictures_prepare(void);
 static int g_knownBuild;
+static volatile int *g_vaCurSet;   // the game's current control set, once found (see install_prompts)
 
 // ---------------------------------------------------------------------------------------------
 // controller inputs ("sources") the game's actions can be placed on
@@ -56,9 +57,12 @@ enum { AX_LX, AX_LY, AX_RX, AX_RY, AX_LT, AX_RT, AX_RY_INV, NAXIS_SRC };
 #define BTN_RT    (SDL_GAMEPAD_BUTTON_COUNT + 1)
 #define NBTN      (SDL_GAMEPAD_BUTTON_COUNT + 2)
 #define SRC_NONE  0
-#define SRC_AXIS(i) (0x100 | (i))
-#define SRC_BTN(i)  (0x200 | (i))
-#define SRC_POV     0x300
+#define KIND_AXIS   0x100
+#define KIND_BTN    0x200
+#define KIND_POV    0x300
+#define SRC_AXIS(i) (KIND_AXIS | (i))
+#define SRC_BTN(i)  (KIND_BTN | (i))
+#define SRC_POV     KIND_POV
 #define SRC_KIND(s) ((s) & 0xF00)
 #define SRC_IDX(s)  ((s) & 0xFF)
 
@@ -118,6 +122,10 @@ static const struct { const char *section, *label; DWORD genre; const ActDef *ac
     {"Driving", "driving", 0x02000000, g_actDrive, sizeof g_actDrive / sizeof g_actDrive[0]},
     {"Menus",   "menus",   0x28000000, g_actMenu,  sizeof g_actMenu / sizeof g_actMenu[0]},
 };
+enum { MODE_FOOT, MODE_DRIVE, MODE_MENU };   // the game's control sets, in the order of its format table
+#define ACT_A 0x24                         // action number of the Xbox A button (Select in menus)
+_Static_assert(SDL_GAMEPAD_BUTTON_COUNT == 26, "button tables below assume SDL 3.2's 26 gamepad buttons");
+_Static_assert(SDL_GAMEPAD_BUTTON_COUNT + 2 <= 32, "button state is kept in a 32-bit mask");
 static int g_map[3][256];          // per mode: action number -> source
 static const char *g_actName[3][256];
 
@@ -134,7 +142,7 @@ static int parse_button(const char *s) {
 static void load_maps(void) {
     int m, i;
     for (m = 0; m < 3; m++) {
-        int stickGame = (m != 2);  // stick options only change gameplay, not menu cursor movement
+        int stickGame = (m != MODE_MENU);  // stick options only change gameplay, not menu cursor movement
         int moveX = (stickGame && g_swapSticks) ? AX_RX : AX_LX, moveY = (stickGame && g_swapSticks) ? AX_RY : AX_LY;
         int aimX = (stickGame && g_swapSticks) ? AX_LX : AX_RX, aimY = (stickGame && g_swapSticks) ? AX_LY : AX_RY;
         if (stickGame && g_invertAimY && aimY == AX_RY) aimY = AX_RY_INV;
@@ -183,9 +191,11 @@ static int game_has_focus(void) {
 }
 static int load_sdl(void) {
     char path[MAX_PATH], exe[MAX_PATH], *s;
-    GetModuleFileNameA(NULL, exe, MAX_PATH); s = strrchr(exe, '\\'); if (s) s[1] = 0;
+    DWORD n = GetModuleFileNameA(NULL, exe, MAX_PATH);
+    if (!n || n >= MAX_PATH) exe[0] = 0;
+    else { s = strrchr(exe, '\\'); if (s) s[1] = 0; }
     snprintf(path, MAX_PATH, "%sSDL3.dll", exe);
-    g_sdl = LoadLibraryA(path);
+    g_sdl = exe[0] ? LoadLibraryA(path) : NULL;
     if (!g_sdl) { snprintf(path, MAX_PATH, "%sSDL3.dll", g_dir); g_sdl = LoadLibraryA(path); }
     if (!g_sdl) { logf_("SDL3.dll NOT found (looked next to tcnyc.exe and next to this plugin) - no controller input"); return 0; }
 #define X(ret, name, args) p##name = (ret (__cdecl *) args)(void (*)(void))GetProcAddress(g_sdl, #name); \
@@ -194,12 +204,12 @@ static int load_sdl(void) {
 #undef X
     return 1;
 }
-static float stick_dz(float v) { return v < -1.f ? -1.f : v > 1.f ? 1.f : v; }
+static float clamp_unit(float v) { return v < -1.f ? -1.f : v > 1.f ? 1.f : v; }
 static void radial(float x, float y, float *ox, float *oy) {
     float m = sqrtf(x * x + y * y);
     if (m <= g_deadzone || m <= 0.f) { *ox = *oy = 0.f; return; }
     float k = (m - g_deadzone) / (1.f - g_deadzone); if (k > 1.f) k = 1.f;
-    *ox = stick_dz(x / m * k); *oy = stick_dz(y / m * k);
+    *ox = clamp_unit(x / m * k); *oy = clamp_unit(y / m * k);
 }
 static void add_pad(SDL_JoystickID id) {
     int i;
@@ -225,11 +235,12 @@ static void remove_pad(SDL_JoystickID id) {
         }
     }
 }
-static uint32_t read_buttons(SDL_Gamepad *p, const float *ax) {
+static uint32_t read_buttons(SDL_Gamepad *p, const float *ax, uint32_t prev) {
     uint32_t b = 0; int i;
     for (i = 0; i < SDL_GAMEPAD_BUTTON_COUNT; i++) if (pSDL_GetGamepadButton(p, i)) b |= 1u << i;
-    if (ax[AX_LT] >= g_trigThreshold) b |= 1u << BTN_LT;
-    if (ax[AX_RT] >= g_trigThreshold) b |= 1u << BTN_RT;
+    // a pulled trigger lets go 5% below the threshold, so a trigger resting on it does not flicker
+    if (ax[AX_LT] >= g_trigThreshold || (prev >> BTN_LT & 1 && ax[AX_LT] >= g_trigThreshold - 0.05f)) b |= 1u << BTN_LT;
+    if (ax[AX_RT] >= g_trigThreshold || (prev >> BTN_RT & 1 && ax[AX_RT] >= g_trigThreshold - 0.05f)) b |= 1u << BTN_RT;
     return b;
 }
 static void read_axes(SDL_Gamepad *p, float *ax) {
@@ -243,12 +254,15 @@ static void read_axes(SDL_Gamepad *p, float *ax) {
     if (ax[AX_RT] < 0.f) ax[AX_RT] = 0.f;
 }
 static DWORD WINAPI Worker(LPVOID arg) {
-    LONG sentSeq = -1; DWORD sentAt = 0; int rumbling = 0;
+    LONG sentSeq = -1; DWORD sentAt = 0; int rumbling = 0, lastActive = -1;
     (void)arg;
-    if (!load_sdl()) return 0;
-    pSDL_SetHint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
-    pSDL_SetMainReady();
-    if (!pSDL_Init(SDL_INIT_GAMEPAD)) { logf_("SDL_Init failed: %s", pSDL_GetError()); return 0; }
+    if (!load_sdl()) g_sdl = NULL;   // missing or wrong version: never call into it
+    else {
+        pSDL_SetHint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
+        pSDL_SetMainReady();
+        if (!pSDL_Init(SDL_INIT_GAMEPAD)) { logf_("SDL_Init failed: %s", pSDL_GetError()); g_sdl = NULL; }
+    }
+    if (!g_sdl) for (;;) { text_update(); Sleep(250); }   // no controller, but ButtonPrompts=2 still rewrites the text
     { int v = pSDL_GetVersion(); logf_("SDL %d.%d.%d ready", v / 1000000, v / 1000 % 1000, v % 1000); }
     for (;;) {
         SDL_Event e; int i;
@@ -259,7 +273,7 @@ static DWORD WINAPI Worker(LPVOID arg) {
         // switch to whichever controller was pressed last, so a second idle pad never gets in the way
         for (i = 0; i < MAXPAD; i++) if (g_pads[i].pad) {
             float ax[NAXIS]; uint32_t b;
-            read_axes(g_pads[i].pad, ax); b = read_buttons(g_pads[i].pad, ax);
+            read_axes(g_pads[i].pad, ax); b = read_buttons(g_pads[i].pad, ax, g_pads[i].prevButtons);
             if ((b & ~g_pads[i].prevButtons) && g_active != i && g_active >= 0) {
                 if (rumbling && g_pads[g_active].pad) pSDL_RumbleGamepad(g_pads[g_active].pad, 0, 0, 0);
                 g_active = i; sentSeq = -1;
@@ -275,7 +289,7 @@ static DWORD WINAPI Worker(LPVOID arg) {
                 g_psPad = t == SDL_GAMEPAD_TYPE_PS3 || t == SDL_GAMEPAD_TYPE_PS4 || t == SDL_GAMEPAD_TYPE_PS5;
                 s.connected = 1;
                 read_axes(g_pads[g_active].pad, s.axis);
-                s.buttons = read_buttons(g_pads[g_active].pad, s.axis);
+                s.buttons = read_buttons(g_pads[g_active].pad, s.axis, g_pads[g_active].prevButtons);
                 prev = g_pads[g_active].prevButtons;
                 g_pads[g_active].prevButtons = s.buttons;
             }
@@ -288,6 +302,7 @@ static DWORD WINAPI Worker(LPVOID arg) {
         // rumble: re-send while active, SDL caps a single request's length
         if (g_active >= 0 && g_pads[g_active].pad) {
             LONG seq = g_rumSeq; DWORD now = GetTickCount();
+            if (g_active != lastActive) { lastActive = g_active; sentSeq = -1; }   // e.g. after a hot-unplug
             LONG lo = g_rumLow, hi = g_rumHigh;
             if (!game_has_focus() && !g_bgInput) lo = hi = 0;
             int want = (lo || hi);
@@ -319,10 +334,10 @@ typedef struct { int src; DWORD app, objid; LONG last; uint32_t cnt; } Bind;
 typedef struct { int idx; GUID guid; DWORD objid, how; } Saved;
 typedef struct Dev {
     IDirectInputDevice8A iface;
-    LONG ref;
+    LONG ref, quitGen;
     int acquired, mode;
     Bind bind[MAXBIND]; int nbind, rot;
-    Saved saved[MAXSAVE]; int nsaved;
+    Saved saved[MAXSAVE]; int nsaved; const void *savedFor;   // keyboard entries borrowed by BuildActionMap, and from which format
     LONG amin, amax;
     DWORD seq, bufsize;
 } Dev;
@@ -330,9 +345,9 @@ typedef struct Dev {
 
 static DWORD src_objid(int s) {
     switch (SRC_KIND(s)) {
-    case 0x100: { int i = SRC_IDX(s) == AX_RY_INV ? AX_RY : SRC_IDX(s); return DIDFT_ABSAXIS | DIDFT_MAKEINSTANCE(i); }
-    case 0x200: return DIDFT_PSHBUTTON | DIDFT_MAKEINSTANCE(SRC_IDX(s));
-    case 0x300: return DIDFT_POV | DIDFT_MAKEINSTANCE(0);
+    case KIND_AXIS: { int i = SRC_IDX(s) == AX_RY_INV ? AX_RY : SRC_IDX(s); return DIDFT_ABSAXIS | DIDFT_MAKEINSTANCE(i); }
+    case KIND_BTN: return DIDFT_PSHBUTTON | DIDFT_MAKEINSTANCE(SRC_IDX(s));
+    case KIND_POV: return DIDFT_POV | DIDFT_MAKEINSTANCE(0);
     }
     return 0;
 }
@@ -374,8 +389,8 @@ static void get_snap(PadSnap *s) {
     }
 }
 static LONG neutral_of(const Bind *b, const PadSnap *s) {
-    if (SRC_KIND(b->src) == 0x300) return pov_value(s->buttons);
-    if (SRC_KIND(b->src) == 0x200) return (s->buttons >> SRC_IDX(b->src)) & 1 ? 0x80 : 0;
+    if (SRC_KIND(b->src) == KIND_POV) return pov_value(s->buttons);
+    if (SRC_KIND(b->src) == KIND_BTN) return (s->buttons >> SRC_IDX(b->src)) & 1 ? 0x80 : 0;
     return 0x7FFFFFFF;  // axes: always report the first value
 }
 
@@ -395,7 +410,7 @@ static ULONG STDMETHODCALLTYPE d_Release(IDirectInputDevice8A *This) {
 }
 static HRESULT STDMETHODCALLTYPE d_GetCapabilities(IDirectInputDevice8A *This, LPDIDEVCAPS c) {
     (void)This;
-    if (!c || c->dwSize < sizeof(DIDEVCAPS_DX3)) return DIERR_INVALIDPARAM;
+    if (!c || (c->dwSize != sizeof(DIDEVCAPS) && c->dwSize != sizeof(DIDEVCAPS_DX3))) return DIERR_INVALIDPARAM;
     DWORD sz = c->dwSize; memset(c, 0, sz); c->dwSize = sz;
     c->dwFlags = DIDC_ATTACHED | (g_rumbleOn ? DIDC_FORCEFEEDBACK : 0);
     c->dwDevType = DI8DEVTYPE_GAMEPAD | (DI8DEVTYPEGAMEPAD_STANDARD << 8) | DIDEVTYPE_HID;
@@ -456,7 +471,7 @@ static int find_obj(DWORD obj, DWORD how) {
 }
 static HRESULT STDMETHODCALLTYPE d_GetObjectInfo(IDirectInputDevice8A *This, LPDIDEVICEOBJECTINSTANCEA o, DWORD obj, DWORD how) {
     int k; (void)This;
-    if (!o || o->dwSize < sizeof(DIDEVICEOBJECTINSTANCE_DX3A)) return DIERR_INVALIDPARAM;
+    if (!o || (o->dwSize != sizeof(DIDEVICEOBJECTINSTANCEA) && o->dwSize != sizeof(DIDEVICEOBJECTINSTANCE_DX3A))) return DIERR_INVALIDPARAM;
     if ((k = find_obj(obj, how)) < 0) return DIERR_OBJECTNOTFOUND;
     obj_info(k, o);
     return DI_OK;
@@ -479,7 +494,14 @@ static HRESULT STDMETHODCALLTYPE d_GetDeviceInfo(IDirectInputDevice8A *This, LPD
 enum { PROP_BUFFERSIZE = 1, PROP_GRANULARITY = 3, PROP_RANGE = 4, PROP_DEADZONE = 5, PROP_SATURATION = 6,
        PROP_FFGAIN = 7, PROP_INSTANCENAME = 13, PROP_PRODUCTNAME = 14, PROP_JOYSTICKID = 15, PROP_VIDPID = 24 };
 static HRESULT STDMETHODCALLTYPE d_GetProperty(IDirectInputDevice8A *This, REFGUID prop, LPDIPROPHEADER ph) {
+    DWORD need;
     if (!ph) return DIERR_INVALIDPARAM;
+    switch ((UINT_PTR)prop) {   // the caller's structure must be big enough for what is written back
+    case PROP_RANGE: need = sizeof(DIPROPRANGE); break;
+    case PROP_INSTANCENAME: case PROP_PRODUCTNAME: need = sizeof(DIPROPSTRING); break;
+    default: need = sizeof(DIPROPDWORD);
+    }
+    if (ph->dwSize < need) return DIERR_INVALIDPARAM;
     switch ((UINT_PTR)prop) {
     case PROP_BUFFERSIZE: ((LPDIPROPDWORD)ph)->dwData = DEV->bufsize; return DI_OK;
     case PROP_RANGE: ((LPDIPROPRANGE)ph)->lMin = DEV->amin; ((LPDIPROPRANGE)ph)->lMax = DEV->amax; return DI_OK;
@@ -520,10 +542,9 @@ static HRESULT STDMETHODCALLTYPE d_Unacquire(IDirectInputDevice8A *This) {
 }
 static HRESULT STDMETHODCALLTYPE d_GetDeviceState(IDirectInputDevice8A *This, DWORD cb, LPVOID data) {
     PadSnap s; int i;
-    if (!data) return DIERR_INVALIDPARAM;
+    if (!data || (cb != sizeof(DIJOYSTATE) && cb != sizeof(DIJOYSTATE2))) return DIERR_INVALIDPARAM;
     if (!DEV->acquired) return DIERR_NOTACQUIRED;
     memset(data, 0, cb);
-    if (cb != sizeof(DIJOYSTATE) && cb != sizeof(DIJOYSTATE2)) return DI_OK;
     get_snap(&s);
     {
         DIJOYSTATE *j = data; LONG lo = DEV->amin, hi = DEV->amax;
@@ -537,14 +558,18 @@ static HRESULT STDMETHODCALLTYPE d_GetDeviceState(IDirectInputDevice8A *This, DW
 }
 static void emit(Dev *d, LPDIDEVICEOBJECTDATA buf, DWORD cb, DWORD n, const Bind *b, LONG value) {
     d->seq++;
-    if (g_logInput) logf_("  %s = %ld", g_actName[d->mode][b->app & 0xFF] ? g_actName[d->mode][b->app & 0xFF] : "?", value);
+    static LONG logged;
+    if (g_logInput && InterlockedIncrement(&logged) <= 20000) logf_("  %s = %ld", g_actName[d->mode][b->app & 0xFF] ? g_actName[d->mode][b->app & 0xFF] : "?", value);
     if (!buf) return;
     DIDEVICEOBJECTDATA *o = (DIDEVICEOBJECTDATA *)((BYTE *)buf + n * cb);
     o->dwOfs = b->objid; o->dwData = (DWORD)value; o->dwTimeStamp = GetTickCount(); o->dwSequence = d->seq;
     if (cb >= sizeof(DIDEVICEOBJECTDATA)) o->uAppData = b->app;
 }
+// While the quit prompt is open the game stops reading input (see h_GetAsyncKeyState). These two
+// counters let each side notice the other: reads made, and quit-prompt key checks made.
+static volatile LONG g_devReads, g_quitChecks;
 static HRESULT STDMETHODCALLTYPE d_GetDeviceData(IDirectInputDevice8A *This, DWORD cb, LPDIDEVICEOBJECTDATA buf, LPDWORD inout, DWORD flags) {
-    Dev *d = DEV; PadSnap s; DWORD max, n = 0; int k, peek = (flags & DIGDD_PEEK) != 0, stop = 0;
+    Dev *d = DEV; PadSnap s; DWORD max, n = 0; int k, peek = (flags & DIGDD_PEEK) != 0;
     Bind save[MAXBIND];
     if (!inout || (cb != sizeof(DIDEVICEOBJECTDATA) && cb != sizeof(DIDEVICEOBJECTDATA_DX3))) return DIERR_INVALIDPARAM;
     if (g_diagOn) diag_add(This, "SDL3 controller");
@@ -553,27 +578,37 @@ static HRESULT STDMETHODCALLTYPE d_GetDeviceData(IDirectInputDevice8A *This, DWO
     if (!d->nbind) { *inout = 0; diag_count(This, DI_OK, 0); return DI_OK; }
     if (peek) memcpy(save, d->bind, sizeof(Bind) * d->nbind);
     get_snap(&s);
+    InterlockedIncrement(&g_devReads);
+    if (d->quitGen != g_quitChecks) {   // back from the quit prompt: its Yes/No press must not reach the game too
+        d->quitGen = g_quitChecks;
+        for (k = 0; k < d->nbind; k++) {
+            Bind *b = &d->bind[k];
+            b->last = neutral_of(b, &s);
+            if (SRC_KIND(b->src) == KIND_BTN) b->cnt = s.presses[SRC_IDX(b->src)];
+        }
+    }
     // Report each mapped control whose value differs from what the game last saw. Nothing queues up,
     // so the game never receives stale input and a full buffer can never swallow a button release.
-    for (k = 0; k < d->nbind && !stop; k++) {
+    for (k = 0; k < d->nbind; k++) {
         int i = (d->rot + k) % d->nbind; Bind *b = &d->bind[i];
-        if (SRC_KIND(b->src) == 0x200) {
-            int idx = SRC_IDX(b->src);
-            int want = ((s.buttons >> idx) & 1) || (s.live && s.presses[idx] != b->cnt);
-            LONG v = want ? 0x80 : 0;
-            if (v != b->last) { if (n >= max) { stop = 1; d->rot = i; break; } emit(d, buf, cb, n++, b, v); b->last = v; }
-            if (want || !s.live) b->cnt = s.presses[idx];   // presses made while the game is in the background are dropped
-        } else if (SRC_KIND(b->src) == 0x300) {
+        if (SRC_KIND(b->src) == KIND_BTN) {
+            int idx = SRC_IDX(b->src), held = (s.buttons >> idx) & 1;
+            int fresh = s.live && s.presses[idx] != b->cnt;   // pressed since the game last saw it go down
+            // still down from before but pressed again in between: report the release first, the press next read
+            LONG v = (b->last == 0x80 && fresh) ? 0 : (held || fresh) ? 0x80 : 0;
+            if (v != b->last) { if (n >= max) { d->rot = i; break; } emit(d, buf, cb, n++, b, v); b->last = v; }
+            if (v == 0x80 || !s.live) b->cnt = s.presses[idx];   // presses made while the game is in the background are dropped
+        } else if (SRC_KIND(b->src) == KIND_POV) {
             LONG v = pov_value(s.buttons);
             if (v != b->last) {
                 // The game adds hat directions together without clearing them, so it must see "centred" in between.
-                if (b->last != -1 && v != -1) { if (n >= max) { stop = 1; d->rot = i; break; } emit(d, buf, cb, n++, b, -1); b->last = -1; }
-                if (n >= max) { stop = 1; d->rot = i; break; }
+                if (b->last != -1 && v != -1) { if (n >= max) { d->rot = i; break; } emit(d, buf, cb, n++, b, -1); b->last = -1; }
+                if (n >= max) { d->rot = i; break; }
                 emit(d, buf, cb, n++, b, v); b->last = v;
             }
         } else {
             LONG v = axis_value(&s, SRC_IDX(b->src), d->amin, d->amax);
-            if (v != b->last) { if (n >= max) { stop = 1; d->rot = i; break; } emit(d, buf, cb, n++, b, v); b->last = v; }
+            if (v != b->last) { if (n >= max) { d->rot = i; break; } emit(d, buf, cb, n++, b, v); b->last = v; }
         }
     }
     if (peek) memcpy(d->bind, save, sizeof(Bind) * d->nbind);
@@ -702,7 +737,7 @@ static HRESULT STDMETHODCALLTYPE d_EnumEffects(IDirectInputDevice8A *This, LPDIE
 }
 static HRESULT STDMETHODCALLTYPE d_GetEffectInfo(IDirectInputDevice8A *This, LPDIEFFECTINFOA ei, REFGUID g) {
     (void)This;
-    if (!ei || !g) return DIERR_INVALIDPARAM;
+    if (!ei || !g || ei->dwSize != sizeof(DIEFFECTINFOA)) return DIERR_INVALIDPARAM;
     if (!g_rumbleOn || !IsEqualGUID(g, &GUID_ConstantForce)) return DIERR_DEVICENOTREG;
     memset(ei, 0, sizeof *ei); ei->dwSize = sizeof *ei; ei->guid = GUID_ConstantForce; ei->dwEffType = DIEFT_CONSTANTFORCE;
     lstrcpynA(ei->tszName, "Constant Force", MAX_PATH);
@@ -735,7 +770,9 @@ static int mode_of(DWORD genre) {
     return -1;
 }
 static int is_kbm_semantic(DWORD sem) { DWORD g = sem >> 24; return g == 0x81 || g == 0x82 || g == 0x83; }
-static int sem_kind(DWORD sem) { DWORD t = sem & 0x600; return t == 0x200 ? 0x100 : t == 0x400 ? 0x200 : t == 0x600 ? 0x300 : 0; }
+static int sem_kind(DWORD sem) {   // DirectInput semantic type bits -> our source kind
+    DWORD t = sem & 0x600; return t == 0x200 ? KIND_AXIS : t == 0x400 ? KIND_BTN : t == 0x600 ? KIND_POV : 0;
+}
 
 static HRESULT STDMETHODCALLTYPE d_BuildActionMap(IDirectInputDevice8A *This, LPDIACTIONFORMATA f, LPCSTR user, DWORD flags) {
     Dev *d = DEV; DWORD i; int m, mapped = 0, pass;
@@ -744,7 +781,14 @@ static HRESULT STDMETHODCALLTYPE d_BuildActionMap(IDirectInputDevice8A *This, LP
     if (!f || !f->rgoAction || f->dwActionSize != sizeof(DIACTIONA)) return DIERR_INVALIDPARAM;
     m = mode_of(f->dwGenre);
     if (m < 0) { static int warned; if (!warned++) logf_("Unknown control set (genre %08lX) - using the on-foot layout", f->dwGenre); m = 0; }
-    d->mode = m; d->nsaved = 0;
+    if (d->nsaved && d->savedFor == f) {   // built twice without SetActionMap: hand back what the first build took
+        int k;
+        for (k = 0; k < d->nsaved; k++) if ((DWORD)d->saved[k].idx < f->dwNumActions) {
+            DIACTIONA *a = &f->rgoAction[d->saved[k].idx];
+            a->guidInstance = d->saved[k].guid; a->dwObjID = d->saved[k].objid; a->dwHow = d->saved[k].how;
+        }
+    }
+    d->mode = m; d->nsaved = 0; d->savedFor = f;
     memset(claimed, 0, sizeof claimed); memset(mine, 0, sizeof mine);
     // First pass takes the game's own controller entries, second pass takes keyboard-only actions
     // the ini puts on a button (Stealth and friends). Each action is taken once.
@@ -753,8 +797,8 @@ static HRESULT STDMETHODCALLTYPE d_BuildActionMap(IDirectInputDevice8A *This, LP
             DIACTIONA *a = &f->rgoAction[i]; UINT_PTR app = a->uAppData; int src;
             if (app >= 256 || claimed[app] || !(src = g_map[m][app])) continue;
             if (pass == 0 && (is_kbm_semantic(a->dwSemantic) || sem_kind(a->dwSemantic) != SRC_KIND(src))) continue;
-            if (pass == 1 && (SRC_KIND(src) != 0x200 || d->nsaved >= MAXSAVE)) continue;
-            if (pass == 1 && d->nsaved < MAXSAVE) {
+            if (pass == 1 && (SRC_KIND(src) != KIND_BTN || d->nsaved >= MAXSAVE)) continue;
+            if (pass == 1) {
                 // borrowed from the keyboard: remembered and handed back in SetActionMap
                 Saved *sv = &d->saved[d->nsaved++]; sv->idx = (int)i; sv->guid = a->guidInstance; sv->objid = a->dwObjID; sv->how = a->dwHow;
             }
@@ -785,13 +829,13 @@ static HRESULT STDMETHODCALLTYPE d_SetActionMap(IDirectInputDevice8A *This, LPDI
         Bind *b = &d->bind[d->nbind++];
         b->src = src; b->app = (DWORD)a->uAppData; b->objid = a->dwObjID;
         b->last = neutral_of(b, &s);   // held buttons do not count as new presses in the new mode
-        b->cnt = SRC_KIND(src) == 0x200 ? s.presses[SRC_IDX(src)] : 0;
+        b->cnt = SRC_KIND(src) == KIND_BTN ? s.presses[SRC_IDX(src)] : 0;
     }
-    for (k = 0; k < d->nsaved; k++) {
+    for (k = 0; k < d->nsaved && d->savedFor == f; k++) if ((DWORD)d->saved[k].idx < f->dwNumActions) {
         DIACTIONA *a = &f->rgoAction[d->saved[k].idx];
         a->guidInstance = d->saved[k].guid; a->dwObjID = d->saved[k].objid; a->dwHow = d->saved[k].how;
     }
-    d->nsaved = 0;
+    d->nsaved = 0; d->savedFor = NULL; d->quitGen = g_quitChecks;
     if (f->dwGenre != lastGenre || nlog < 3) {
         logf_("Controls set: %s (%d actions on the controller, axis range %ld..%ld)", g_modes[d->mode].label, d->nbind, d->amin, d->amax);
         if (f->dwGenre != lastGenre) nlog = 0;
@@ -842,10 +886,14 @@ typedef struct DiagDev { void *dev; char name[24]; volatile LONG calls, ok, fail
 static DiagDev g_diag[12]; static volatile LONG g_ndiag;
 static DiagDev *diag_find(void *dev) { LONG i; for (i = 0; i < g_ndiag; i++) if (g_diag[i].dev == dev) return &g_diag[i]; return NULL; }
 static DiagDev *diag_add(void *dev, const char *name) {
-    DiagDev *d = diag_find(dev);
-    if (d || g_ndiag >= 12) return d;
-    d = &g_diag[g_ndiag]; d->dev = dev; lstrcpynA(d->name, name, sizeof d->name);
-    InterlockedIncrement(&g_ndiag);
+    DiagDev *d;
+    EnterCriticalSection(&g_cs);
+    d = diag_find(dev);
+    if (!d && g_ndiag < 12) {
+        d = &g_diag[g_ndiag]; d->dev = dev; lstrcpynA(d->name, name, sizeof d->name);
+        InterlockedIncrement(&g_ndiag);
+    }
+    LeaveCriticalSection(&g_cs);
     return d;
 }
 static HRESULT (STDMETHODCALLTYPE *o_RGetDeviceData)(IDirectInputDevice8A *, DWORD, LPDIDEVICEOBJECTDATA, LPDWORD, DWORD);
@@ -870,7 +918,6 @@ static HRESULT STDMETHODCALLTYPE h_RAcquire(IDirectInputDevice8A *This) {
     if (d) { InterlockedIncrement(&d->acq); if (FAILED(hr)) { InterlockedIncrement(&d->acqFail); d->lastErr = hr; } }
     return hr;
 }
-static int g_diagOn;
 static void patch_slot(void **slot, void *hook, void **orig);
 // Watchdog: when the game stops reading input, look at where its main thread is. The thread is
 // paused only long enough to copy its registers and stack; names are looked up after it resumes.
@@ -890,6 +937,7 @@ static void sample_main_thread(int k) {
     HANDLE t = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, g_inputThread);
     CONTEXT c; DWORD stack[1024]; SIZE_T got = 0; char line[1400], nm[96]; int len, i, hits = 0;
     if (!t) { logf_("watchdog: cannot open the game thread (error %lu)", GetLastError()); return; }
+    if (GetProcessIdOfThread(t) != GetCurrentProcessId()) { CloseHandle(t); return; }   // thread id reused elsewhere
     memset(&c, 0, sizeof c); c.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
     if (SuspendThread(t) == (DWORD)-1) { CloseHandle(t); return; }
     GetThreadContext(t, &c);
@@ -907,7 +955,7 @@ static DWORD WINAPI DiagThread(LPVOID arg) {
     for (;;) {
         // these game variables were worked out on one build; on any other they read as 0
         DWORD now = GetTickCount(), bits = g_knownBuild ? *(volatile DWORD *)0x0084A904 : 0;
-        DWORD set = g_knownBuild ? *(volatile DWORD *)0x0075CCC0 : 0, wnd = g_knownBuild ? *(volatile DWORD *)0x00793380 : 0;
+        DWORD set = g_vaCurSet ? (DWORD)*g_vaCurSet : 0, wnd = g_knownBuild ? *(volatile DWORD *)0x00793380 : 0;
         DWORD mgr = g_knownBuild ? *(volatile DWORD *)0x0084A8D0 : 0;
         static DWORD lastMgr = 0xFFFFFFFF;
         if (mgr != lastMgr) { logf_("game control manager now %08lX", mgr); lastMgr = mgr; }
@@ -1019,7 +1067,7 @@ static HRESULT WINAPI h_DI8Create(HINSTANCE inst, DWORD ver, REFIID iid, LPVOID 
         patch_slot((void **)&vt->GetDeviceStatus, (void *)h_GetDeviceStatus, (void **)&o_GetDeviceStatus);
         patch_slot((void **)&vt->EnumDevicesBySemantics, (void *)h_EnumBySem, (void **)&o_EnumBySem);
         if (logs++ < 4) logf_("DirectInput created by the game - hooks in place");
-        if (g_diagOn) {   // which game code path set input up: look for its known return addresses on the stack
+        if (g_diagOn && g_knownBuild) {   // which game code path set input up: look for its known return addresses on the stack
             static const struct { DWORD ret; const char *what; } sites[] = {
                 {0x0049BEDD, "game start-up"}, {0x00651C2E, "setup dialog opening"}, {0x006520FC, "reset-controls message box"},
                 {0x0063DD90, "rumble device set-up"}, {0x00645D5B, "control manager set-up"},
@@ -1043,7 +1091,7 @@ static HRESULT WINAPI h_DI8Create(HINSTANCE inst, DWORD ver, REFIID iid, LPVOID 
 // builds of the game work where the code is the same. A feature whose pattern is missing stays off.
 // ---------------------------------------------------------------------------------------------
 static BYTE *g_exeBase; static DWORD g_exeStamp;
-static int g_knownBuild;   // the build every address in this file was worked out on (diagnostics only)
+// g_knownBuild (declared at the top): the build every fixed address in this file was worked out on (diagnostics only)
 static int parse_pattern(const char *pat, BYTE *bytes, BYTE *mask) {
     int n = 0;
     while (*pat && n < 128) {
@@ -1089,11 +1137,13 @@ static void exe_identify(void) {
 // (0x63ED90). That last step is replaced: the button becomes the game action, the action becomes
 // whatever controller button the ini puts it on, and that button's name is shown.
 // ---------------------------------------------------------------------------------------------
-static BYTE *g_vaPromptName;            // const char *__cdecl (int consoleButtonMask)     (0x63ED90 here)
 static BYTE *g_vaMask2Action;           // int __cdecl (int consoleButtonMask) -> action   (0x63EAF0 here)
 static volatile int *g_vaCurSet;        // current control set: 0 on foot, 1 driving, 2 menus (0x75CCC0 here)
 static int g_promptMode = 1, g_promptNames = 0, g_promptsOn;
 static const char *(__cdecl *o_PromptName)(int);
+// show controller names (prompts, text, quit picture): ButtonPrompts=2, or 1 while a controller is connected
+static int prompts_active(void) { return g_promptMode == 2 || (g_promptMode == 1 && g_snap.connected); }
+static int prompts_ps(void) { return g_promptNames == 2 || (g_promptNames == 0 && g_psPad); }
 
 static const char *button_name(int btn, int ps) {
     static const char *xb[NBTN] = {"A", "B", "X", "Y", "Back", "Guide", "Start", "LS", "RS", "LB", "RB",
@@ -1108,12 +1158,12 @@ static const char *__cdecl h_PromptName(int mask) {
     static struct { int mask, set; } seen[64]; static int nseen;
     int set = *g_vaCurSet, app, src, ps, i;
     const char *r = NULL;
-    if (g_promptMode == 2 || (g_promptMode == 1 && g_snap.connected)) {
+    if (prompts_active()) {
         app = ((int (__cdecl *)(int))g_vaMask2Action)(mask);
         if (set < 0 || set > 2) set = 0;
         src = app > 0 && app < 256 ? g_map[set][app] : SRC_NONE;
-        ps = g_promptNames == 2 || (g_promptNames == 0 && g_psPad);
-        if (SRC_KIND(src) == 0x200) r = button_name(SRC_IDX(src), ps);
+        ps = prompts_ps();
+        if (SRC_KIND(src) == KIND_BTN) r = button_name(SRC_IDX(src), ps);
         else if (app >= 0x19 && app <= 0x1C)   // d-pad directions: the d-pad always drives these
             r = button_name(SDL_GAMEPAD_BUTTON_DPAD_UP + (app - 0x19), ps);
     }
@@ -1132,7 +1182,6 @@ static void install_prompts(void) {
     BYTE *p, *t; DWORD old;
     if (!g_promptMode) { logf_("Button prompts: off (ButtonPrompts=0)"); return; }
     if (!(p = find_one(sig, 1))) { logf_("Button prompts: NOT installed, the game's key-name code was not found in this tcnyc.exe"); return; }
-    g_vaPromptName = p;
     g_vaCurSet = *(volatile int **)(p + 1);
     g_vaMask2Action = p + 36 + *(int *)(p + 32);
     if (IsBadReadPtr(g_vaMask2Action, 9) || memcmp(g_vaMask2Action, m2a, 9) || IsBadReadPtr((void *)g_vaCurSet, 4)) {
@@ -1142,6 +1191,7 @@ static void install_prompts(void) {
     t = VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!t) { logf_("Button prompts: NOT installed (no memory)"); return; }
     memcpy(t, p, 5); t[5] = 0xE9; *(int *)(t + 6) = (int)(UINT_PTR)(p + 5) - (int)(UINT_PTR)(t + 10);
+    VirtualProtect(t, 16, PAGE_EXECUTE_READ, &old); FlushInstructionCache(GetCurrentProcess(), t, 16);
     o_PromptName = (const char *(__cdecl *)(int))t;
     if (!VirtualProtect(p, 5, PAGE_EXECUTE_READWRITE, &old)) { logf_("Button prompts: NOT installed (error %lu)", GetLastError()); return; }
     p[0] = 0xE9; *(int *)(p + 1) = (int)(UINT_PTR)h_PromptName - (int)(UINT_PTR)(p + 5);
@@ -1153,8 +1203,6 @@ static void install_prompts(void) {
 }
 
 static int hook_import(const char *dll, const char *fn, void *hook, void **orig);
-static int prompts_active(void) { return g_promptsOn && (g_promptMode == 2 || (g_promptMode == 1 && g_snap.connected)); }
-static int prompts_ps(void) { return g_promptNames == 2 || (g_promptNames == 0 && g_psPad); }
 
 // ---------------------------------------------------------------------------------------------
 // hard-coded key names in the game's text. Nearly all prompts use $INPUT_...$ tokens (handled
@@ -1162,8 +1210,16 @@ static int prompts_ps(void) { return g_promptNames == 2 || (g_promptNames == 0 &
 // reads it from disk and those strings are rewritten in place (never longer than the original).
 // ---------------------------------------------------------------------------------------------
 typedef struct { char *p; int len; char orig[256]; char now[256]; } TextSite;
-static TextSite g_texts[16]; static int g_ntexts, g_textPad = -1;
+#define MAXTEXT 16
+static TextSite g_texts[MAXTEXT]; static int g_ntexts, g_textPad = -1;
 static int g_nLangReads; static void lang_reads_poll(void);
+// the game owns this memory: check it is still mapped and writable, and never let a fault escape
+static int mem_writable(void *p, size_t n) {
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQuery(p, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS))) return 0;
+    if (!(mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) return 0;
+    return (BYTE *)p + n <= (BYTE *)mbi.BaseAddress + mbi.RegionSize;
+}
 static HANDLE g_langFiles[8];
 static HANDLE (WINAPI *o_CreateFileA)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
 static BOOL (WINAPI *o_ReadFile)(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
@@ -1172,7 +1228,7 @@ static void text_wanted(const TextSite *t, int pad, char *out) {
     memcpy(out, t->orig, t->len + 1);
     if (!pad) return;
     if (!strcmp(t->orig, "Press ENTER")) {         // the menus' Select button
-        int src = g_map[2][0x24]; const char *nm = SRC_KIND(src) == 0x200 ? button_name(SRC_IDX(src), prompts_ps()) : NULL;
+        int src = g_map[MODE_MENU][ACT_A]; const char *nm = SRC_KIND(src) == KIND_BTN ? button_name(SRC_IDX(src), prompts_ps()) : NULL;
         if (nm && (int)strlen(nm) + 6 <= t->len) snprintf(out, t->len + 1, "Press %s", nm);
     } else {                                       // "... or B to free more blocks." is an Xbox leftover
         char *k = strstr(out, " or B to free more blocks.");
@@ -1185,9 +1241,13 @@ static void text_apply(int mode) {   // 0 = keyboard wording, 1 = Xbox names, 2 
     for (i = 0; i < g_ntexts; i++) {
         TextSite *t = &g_texts[i]; char want[256];
         if (!t->p) continue;
-        if (IsBadWritePtr(t->p, t->len + 1) || memcmp(t->p, t->now, t->len + 1)) { t->p = NULL; continue; }   // buffer gone or reused
         text_wanted(t, pad, want);
-        if (memcmp(want, t->now, t->len + 1)) { memcpy(t->p, want, t->len + 1); memcpy(t->now, want, t->len + 1); }
+        __try {
+            if (!mem_writable(t->p, t->len + 1) || memcmp(t->p, t->now, t->len + 1)) {   // buffer gone or reused
+                logf_("Game text: \"%.30s...\" is no longer in the game's memory", t->orig); t->p = NULL; continue;
+            }
+            if (memcmp(want, t->now, t->len + 1)) { memcpy(t->p, want, t->len + 1); memcpy(t->now, want, t->len + 1); }
+        } __except (EXCEPTION_EXECUTE_HANDLER) { t->p = NULL; }
     }
     g_textPad = mode;
     LeaveCriticalSection(&g_cs);
@@ -1204,8 +1264,11 @@ static void text_scan(char *buf, DWORD n) {
                 char *s = p; int len;
                 while (s > buf && s[-1]) s--;                     // start of this string
                 len = (int)strnlen(s, end - s);
-                if (s + len < end && len < 255 && g_ntexts < 16 && (k != 0 || len == (int)tl)) {
-                    TextSite *t = &g_texts[g_ntexts++];
+                int slot = -1, j;
+                for (j = 0; j < g_ntexts; j++) { if (g_texts[j].p == s) slot = -2; else if (!g_texts[j].p && slot == -1) slot = j; }   // already known / free slot
+                if (slot == -1 && g_ntexts < MAXTEXT) slot = g_ntexts++;
+                if (slot >= 0 && s + len < end && len < 255 && (k != 0 || len == (int)tl)) {
+                    TextSite *t = &g_texts[slot];
                     t->p = s; t->len = len; memcpy(t->orig, s, len + 1); memcpy(t->now, s, len + 1);
                     found++;
                     logf_("Game text: found \"%.60s%s\"", s, len > 60 ? "..." : "");
@@ -1234,14 +1297,15 @@ static HANDLE WINAPI h_CreateFileA(LPCSTR name, DWORD acc, DWORD share, LPSECURI
 }
 // The game reads the table with overlapped (asynchronous) I/O, so the data is not there yet when the
 // read call returns. Remember where it is going and let the worker scan it a moment later.
-static struct { char *buf; DWORD n, at; } g_langReads[16]; static int g_nLangReads;
+#define MAXREADS 16
+static struct { char *buf; DWORD n, at; } g_langReads[MAXREADS];
 static BOOL (WINAPI *o_ReadFileEx)(HANDLE, LPVOID, DWORD, LPOVERLAPPED, LPOVERLAPPED_COMPLETION_ROUTINE);
 static void note_lang_read(HANDLE h, LPVOID buf, DWORD n) {
     int i, lang = 0;
     if (!buf || !n) return;
     EnterCriticalSection(&g_cs);
     for (i = 0; i < 8; i++) if (g_langFiles[i] == h) lang = 1;
-    if (lang && g_nLangReads < 16) { g_langReads[g_nLangReads].buf = buf; g_langReads[g_nLangReads].n = n; g_langReads[g_nLangReads].at = GetTickCount(); g_nLangReads++; }
+    if (lang && g_nLangReads < MAXREADS) { g_langReads[g_nLangReads].buf = buf; g_langReads[g_nLangReads].n = n; g_langReads[g_nLangReads].at = GetTickCount(); g_nLangReads++; }
     LeaveCriticalSection(&g_cs);
 }
 static BOOL WINAPI h_ReadFile(HANDLE h, LPVOID buf, DWORD n, LPDWORD got, LPOVERLAPPED ov) {
@@ -1252,13 +1316,17 @@ static BOOL WINAPI h_ReadFileEx(HANDLE h, LPVOID buf, DWORD n, LPOVERLAPPED ov, 
     note_lang_read(h, buf, n);
     return o_ReadFileEx(h, buf, n, ov, cr);
 }
-static void lang_reads_poll(void) {   // worker thread
+static void lang_reads_poll(void) {   // worker thread, every 250 ms
     int i, j;
     EnterCriticalSection(&g_cs);
     for (i = 0; i < g_nLangReads; ) {
-        if (GetTickCount() - g_langReads[i].at < 500) { i++; continue; }
+        DWORD age = GetTickCount() - g_langReads[i].at; int before = g_ntexts, done;
+        if (age < 500) { i++; continue; }   // an overlapped read: give it time to land
         if (g_diagOn) logf_("diag text table read: %lu bytes at %p", g_langReads[i].n, (void *)g_langReads[i].buf);
-        if (!IsBadReadPtr(g_langReads[i].buf, g_langReads[i].n)) text_scan(g_langReads[i].buf, g_langReads[i].n);
+        __try { if (mem_writable(g_langReads[i].buf, g_langReads[i].n)) text_scan(g_langReads[i].buf, g_langReads[i].n); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { }
+        done = g_ntexts > before || age > 10000;   // found, or keep looking for up to 10 s in case the read was slow
+        if (!done) { i++; continue; }
         for (j = i + 1; j < g_nLangReads; j++) g_langReads[j - 1] = g_langReads[j];
         g_nLangReads--;
     }
@@ -1273,11 +1341,19 @@ static void lang_reads_poll(void) {   // worker thread
 // player's own game file, so no game artwork is shipped with the plugin.
 // ---------------------------------------------------------------------------------------------
 static volatile BYTE *g_vaQuitFlag;     // quit prompt open (0x793359 here)
-static BYTE *g_vaQuitCall;              // the call that loads its picture (0x648D0D here)
 static void *g_vaLoadPicture;           // picture loader (path, 1, 0) (0x62B4D0 here)
 static int g_quitOn = 1, g_quitKeysOk, g_quitPicOk;
 static SHORT (WINAPI *o_GetAsyncKeyState)(int);
 static char g_quitPic[2][MAX_PATH];      // generated pictures: [0] Xbox names, [1] PlayStation names
+static CRITICAL_SECTION g_picCs;         // the worker and the game thread may both want a picture
+#define PCT_SIZE (0x80 + 640 * 448 * 4)  // 128-byte header, then 640x448 BGRA
+static int quit_picture_ready(const char *path) {   // complete, and not older than this plugin
+    WIN32_FILE_ATTRIBUTE_DATA pic, me; char self[MAX_PATH];
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &pic) || pic.nFileSizeHigh || pic.nFileSizeLow != PCT_SIZE) return 0;
+    snprintf(self, MAX_PATH, "%sTCNYCSDL3Pad.asi", g_dir);
+    if (GetFileAttributesExA(self, GetFileExInfoStandard, &me) && CompareFileTime(&pic.ftLastWriteTime, &me.ftLastWriteTime) < 0) return 0;
+    return 1;
+}
 
 static int make_quit_picture(int ps, const char *out) {
     char src[MAX_PATH], *s; HANDLE f; DWORD size, got; BYTE *data; int ok = 0;
@@ -1286,8 +1362,8 @@ static int make_quit_picture(int ps, const char *out) {
     f = CreateFileA(src, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     if (f == INVALID_HANDLE_VALUE) { logf_("Quit screen picture: %s not found", src); return 0; }
     size = GetFileSize(f, NULL);
-    data = HeapAlloc(GetProcessHeap(), 0, size ? size : 1);
-    if (data && ReadFile(f, data, size, &got, NULL) && got == size && size == 0x80 + 640 * 448 * 4 &&
+    data = size == PCT_SIZE ? HeapAlloc(GetProcessHeap(), 0, size) : NULL;
+    if (data && ReadFile(f, data, size, &got, NULL) && got == size &&
         ((DWORD *)data)[0] == 7 && ((DWORD *)data)[1] == ((448u << 16) | 640u) && ((DWORD *)data)[3] == 0x80 && ((DWORD *)data)[6] == 640 * 448 * 4) {
         BITMAPINFO bi; void *bits; HDC dc = CreateCompatibleDC(NULL); HBITMAP bm; HFONT font, oldf;
         memset(&bi, 0, sizeof bi);
@@ -1320,9 +1396,13 @@ static int make_quit_picture(int ps, const char *out) {
             }
             for (i = 0; i < 640 * 448; i++) orig[i] |= 0xFF000000u;
             SelectObject(dc, oldf); DeleteObject(font); SelectObject(dc, oldb);
-            {
-                HANDLE o = CreateFileA(out, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL); DWORD wr = 0;
+            {   // write beside it, then swap it in, so a half-written picture is never left under the real name
+                char tmp[MAX_PATH]; HANDLE o; DWORD wr = 0;
+                snprintf(tmp, MAX_PATH, "%s.tmp", out);
+                o = CreateFileA(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
                 if (o != INVALID_HANDLE_VALUE) { ok = WriteFile(o, data, size, &wr, NULL) && wr == size; CloseHandle(o); }
+                ok = ok && MoveFileExA(tmp, out, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+                if (!ok) DeleteFileA(tmp);
             }
         }
         if (bm) DeleteObject(bm);
@@ -1333,12 +1413,18 @@ static int make_quit_picture(int ps, const char *out) {
     logf_("Quit screen picture (%s names): %s", ps ? "PlayStation" : "Xbox", ok ? "created" : "could NOT be created");
     return ok;
 }
+static int quit_picture_get(int ps) {   // make the picture if needed; 1 when it is ready to use
+    int ok;
+    EnterCriticalSection(&g_picCs);
+    ok = quit_picture_ready(g_quitPic[ps]) || make_quit_picture(ps, g_quitPic[ps]);
+    LeaveCriticalSection(&g_picCs);
+    return ok;
+}
 static unsigned __cdecl h_LoadQuitPicture(const char *path, int a, int b) {
     unsigned (__cdecl *load)(const char *, int, int) = (unsigned (__cdecl *)(const char *, int, int))g_vaLoadPicture;
     if (prompts_active()) {
         int ps = prompts_ps();
-        if (GetFileAttributesA(g_quitPic[ps]) == INVALID_FILE_ATTRIBUTES) make_quit_picture(ps, g_quitPic[ps]);
-        if (GetFileAttributesA(g_quitPic[ps]) != INVALID_FILE_ATTRIBUTES) {
+        if (quit_picture_get(ps)) {
             unsigned r = load(g_quitPic[ps], a, b);
             if (r > 1) return r;
             logf_("Quit screen: the game could not load %s - showing its own picture", g_quitPic[ps]);
@@ -1348,14 +1434,15 @@ static unsigned __cdecl h_LoadQuitPicture(const char *path, int a, int b) {
 }
 static SHORT WINAPI h_GetAsyncKeyState(int vk) {
     SHORT r = o_GetAsyncKeyState(vk);
-    static DWORD lastCall; static uint32_t base[2];
+    static LONG seenReads = -1; static uint32_t base[2];
     if ((vk == 'Y' || vk == 'N') && g_quitKeysOk && *g_vaQuitFlag) {
-        PadSnap s; DWORD now = GetTickCount(); int k = vk == 'N', btn = k ? SDL_GAMEPAD_BUTTON_EAST : SDL_GAMEPAD_BUTTON_SOUTH;
+        PadSnap s; int k = vk == 'N', btn = k ? SDL_GAMEPAD_BUTTON_EAST : SDL_GAMEPAD_BUTTON_SOUTH;
         get_snap(&s);
-        if (now - lastCall > 300) {   // prompt just opened: only presses made from now on count
+        InterlockedIncrement(&g_quitChecks);
+        if (g_devReads != seenReads) {   // the game read input since our last check, so the prompt has just opened:
+            seenReads = g_devReads;       // only presses made from now on count (the game reads nothing while it is open)
             base[0] = s.presses[SDL_GAMEPAD_BUTTON_SOUTH]; base[1] = s.presses[SDL_GAMEPAD_BUTTON_EAST];
         }
-        if (vk == 'N') lastCall = now;
         if (s.live && (s.buttons >> btn & 1) && s.presses[btn] != base[k]) {
             static int logged;
             if (logged++ < 4) logf_("Quit screen: %s pressed on the controller", k ? "No" : "Yes");
@@ -1384,7 +1471,7 @@ static void install_quit_screen(void) {
         snprintf(sig, sizeof sig, "68 %02X %02X %02X %02X C7 05 ?? ?? ?? ?? 01 00 00 00 E8", a & 0xFF, a >> 8 & 0xFF, a >> 16 & 0xFF, a >> 24);
         if ((c = find_one(sig, 1))) {
             c += 15;
-            g_vaQuitCall = c; g_vaLoadPicture = c + 5 + *(int *)(c + 1);
+            g_vaLoadPicture = c + 5 + *(int *)(c + 1);
             if (VirtualProtect(c, 5, PAGE_EXECUTE_READWRITE, &old)) {
                 *(int *)(c + 1) = (int)((UINT_PTR)h_LoadQuitPicture - (UINT_PTR)(c + 5));
                 VirtualProtect(c, 5, old, &old); FlushInstructionCache(GetCurrentProcess(), c, 5);
@@ -1392,13 +1479,13 @@ static void install_quit_screen(void) {
             }
         }
     }
-    logf_("Quit screen buttons: %s (%d key check%s), picture: %s", g_quitKeysOk ? "installed" : "FAILED", n, n == 1 ? "" : "s",
-          g_quitPicOk ? "installed" : "NOT installed (its loader was not found)");
+    logf_("Quit screen buttons: %s (%d key check%s), picture: %s%s", g_quitKeysOk ? "installed" : "FAILED", n, n == 1 ? "" : "s",
+          g_quitPicOk ? "installed" : "NOT installed (its loader was not found)", g_promptMode ? "" : " but not used (ButtonPrompts=0)");
 }
 static void quit_pictures_prepare(void) {   // worker thread, once a controller is in use
     int ps;
     if (!g_quitPicOk) return;
-    for (ps = 0; ps < 2; ps++) if (GetFileAttributesA(g_quitPic[ps]) == INVALID_FILE_ATTRIBUTES) make_quit_picture(ps, g_quitPic[ps]);
+    for (ps = 0; ps < 2; ps++) quit_picture_get(ps);
 }
 static void install_text(void) {
     int a = hook_import("KERNEL32.dll", "CreateFileA", (void *)h_CreateFileA, (void **)&o_CreateFileA);
@@ -1446,7 +1533,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
     (void)r;
     if (reason == DLL_PROCESS_ATTACH) {
         char *s; int m, i;
-        DisableThreadLibraryCalls(h); InitializeCriticalSection(&g_cs);
+        DisableThreadLibraryCalls(h); InitializeCriticalSection(&g_cs); InitializeCriticalSection(&g_picCs);
         GetModuleFileNameA(h, g_dir, MAX_PATH); s = strrchr(g_dir, '\\'); if (s) s[1] = 0;
         snprintf(g_log, MAX_PATH, "%sTCNYCSDL3Pad.log", g_dir);
         snprintf(g_ini, MAX_PATH, "%sTCNYCSDL3Pad.ini", g_dir);
@@ -1491,7 +1578,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         else {
             logf_("DirectInput hook: installed");
             install_prompts();
-            if (g_promptsOn) { install_text(); install_quit_screen(); }
+            if (g_promptMode) install_text();
+            install_quit_screen();   // its buttons work with ButtonPrompts=0 too; only its picture follows ButtonPrompts
             CreateThread(NULL, 0, Worker, NULL, 0, NULL);
             if (g_diagOn) { logf_("Input diagnostics on (DiagInput=1)"); CreateThread(NULL, 0, DiagThread, NULL, 0, NULL); }
         }

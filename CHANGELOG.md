@@ -2,6 +2,76 @@
 
 All notable changes to TCNYCSDL3Pad. Dates are YYYY-MM-DD.
 
+## [0.4.1] - 2026-10-06
+
+Fixes from a full review of the plugin: automated checks, three independent read-only reviews
+(security, logic, readability), and every finding checked against the code.
+
+### Fixed
+- **Answering "No" on the quit screen with Circle/B no longer also presses B in the menu behind it.**
+  The game stops reading input while the prompt is open, then saw that press as new when it started
+  again. The plugin now treats input as fresh after the prompt closes, so held buttons are not
+  reported as new presses.
+- **Reopening the quit screen quickly can no longer confirm "Yes" by itself.** Which presses count
+  used to depend on a 300 ms gap; it now depends on the game not reading input, which only happens
+  while the prompt is open.
+- **Quick re-presses are no longer lost.** If a button was still down at one input read but had been
+  released and pressed again before the next, the game saw nothing. It now gets the release, then
+  the press. The game reads the controller only every third input call, so this mattered when mashing.
+- **Triggers no longer flicker** when resting near `TriggerThreshold`: a pulled trigger now lets go
+  5% below it.
+- **Quit screen buttons work with `ButtonPrompts=0`.** They used to be installed only when the prompt
+  patch was. Only the picture follows `ButtonPrompts` now.
+- **The quit screen picture is written safely.** It is written to a temporary file and swapped in, so a
+  half-written picture is never used. It is size-checked before use, and rebuilt when the plugin is
+  newer than it. Generation from two threads at once is serialised.
+- **Text rewriting is more careful with the game's memory.** It checks that the memory is still mapped
+  and writable before touching it, and catches any fault. If the read is slow it keeps looking for up
+  to 10 seconds, and it logs when a string is no longer in memory. It reuses its slots instead of
+  filling up.
+- **Rumble moves straight to the next controller** after the one in use is unplugged.
+- **SDL3 failures are safe.** If SDL3.dll is missing a function, the plugin now never calls into it.
+  The text fix keeps working without SDL3.
+- **Building twice before applying a control set** can no longer hand the keyboard's borrowed actions
+  (Stealth and others) back to the wrong owner. The hand-back is now bounds-checked.
+- **The virtual controller accepts only the structure sizes DirectInput defines** for capabilities,
+  object info, device state, properties and effect info.
+- **Hardening:**
+  - the prompt hook's trampoline is made read-only after it is written;
+  - the input-diagnostics device table is locked;
+  - the watchdog only pauses threads of the game's own process;
+  - `LogInput` stops after 20,000 lines;
+  - the exe path is checked before SDL3.dll is loaded.
+
+### Changed
+- `tools/` and `.checks.json`: project checks run by `check-project.mjs`. They cover:
+  - a build with no warnings;
+  - the byte patterns, checked against `tcnyc.exe` the way the plugin uses them (on the original build,
+    also the addresses found);
+  - an offline replay of the game's DirectInput calls;
+  - every setting's default kept in step across code, ini and README.
+- `test/build_test.bat` takes SDL3.dll from the game folder.
+- Readability: named constants for source kinds and control sets, compile-time checks on the button
+  tables, and duplicate declarations removed.
+
+### Review findings checked and not acted on
+- *Diagnostics table race* (security): only reachable if two threads registered devices at once. The game
+  does it from one thread, so it was not reachable. Locked anyway, since it costs nothing.
+- *Caller-given structure sizes* (security): only the game calls the virtual controller, and it passes
+  the standard sizes. Not reachable from outside the game. Tightened anyway.
+- *The text buffer may be freed* (logic): checked in a run. The buffer stays in memory, and the log
+  records it if it ever goes.
+- *Some stick reads in the game use a smaller dead zone than 32/127* (logic): true for a few (at most 7 of 61)
+  read sites. With `CancelGameDeadzone=1` those respond slightly earlier. Left as is and documented.
+
+### Tested, and not
+- Tested:
+  - all automated checks pass;
+  - each was broken on purpose once and went red;
+  - the plugin loads in the game, installs every feature by pattern, and finds the text table.
+- Not tested in game yet: the quit-screen fixes and the re-press and trigger changes. They need a
+  controller in hand.
+
 ## [0.4.0] - 2026-10-06
 
 ### Added
@@ -29,7 +99,8 @@ All notable changes to TCNYCSDL3Pad. Dates are YYYY-MM-DD.
 - **No longer tied to one exe.** The prompt and quit-screen patches used fixed addresses for one
   build. They now find their code by byte pattern at startup and read the addresses they need from
   the instructions they find (the current control set, the quit flag, the picture loader). Every
-  pattern must match exactly once, or that feature stays off and the log says so. On the original
+  pattern must match exactly once (the quit prompt's key check, which the game has twice, may match
+  one to four times if every copy uses the same flag), or that feature stays off and the log says so. On the original
   build every pattern lands on the same address as before. Controller input, rumble, the dead-zone
   fix and the text fix never depended on addresses.
 - The log's second line names the exe build. The input diagnostics' game-state readings

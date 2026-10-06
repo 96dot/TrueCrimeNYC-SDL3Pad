@@ -1,0 +1,329 @@
+{
+  "mustExist": [
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md",
+    "TCNYCSDL3Pad.ini",
+    "licenses/SDL3-LICENSE.txt",
+    "docs/HOW-IT-WAS-FIXED.md",
+    "build.bat",
+    "sdl3_min.h"
+  ],
+  "commands": [
+    {
+      "name": "plugin builds with no warnings",
+      "run": "python tools/build_check.py",
+      "slow": true,
+      "timeoutMin": 5
+    },
+    {
+      "name": "byte patterns match tcnyc.exe the way the plugin uses them",
+      "run": "python tools/pattern_check.py"
+    },
+    {
+      "name": "offline replay of the game's DirectInput calls",
+      "run": "python tools/harness_check.py",
+      "slow": true,
+      "timeoutMin": 5
+    }
+  ],
+  "inStep": [
+    {
+      "name": "version: code matches changelog",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "#define VERSION \"(\\d+\\.\\d+\\.\\d+)\""
+      },
+      "b": {
+        "file": "CHANGELOG.md",
+        "regex": "## \\[(\\d+\\.\\d+\\.\\d+)\\]"
+      }
+    },
+    {
+      "name": "StickDeadzone default: code matches ini",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "\"StickDeadzone\", (\\d+)"
+      },
+      "b": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\\nStickDeadzone=(\\d+)"
+      }
+    },
+    {
+      "name": "StickDeadzone default: ini matches README",
+      "a": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\\nStickDeadzone=(\\d+)"
+      },
+      "b": {
+        "file": "README.md",
+        "regex": "\\| `StickDeadzone` \\| (\\d+) \\|"
+      }
+    },
+    {
+      "name": "TriggerThreshold default: code matches ini",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "\"TriggerThreshold\", (\\d+)"
+      },
+      "b": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\\nTriggerThreshold=(\\d+)"
+      }
+    },
+    {
+      "name": "TriggerThreshold default: ini matches README",
+      "a": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\\nTriggerThreshold=(\\d+)"
+      },
+      "b": {
+        "file": "README.md",
+        "regex": "\\| `TriggerThreshold` \\| (\\d+) \\|"
+      }
+    },
+    {
+      "name": "RumbleStrength default: code matches ini",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "\"RumbleStrength\", (\\d+)"
+      },
+      "b": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\\nRumbleStrength=(\\d+)"
+      }
+    },
+    {
+      "name": "Rumble default: code matches ini",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "\"Rumble\", (\\d+)"
+      },
+      "b": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\\nRumble=(\\d+)"
+      }
+    },
+    {
+      "name": "ButtonPrompts default: code matches ini",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "\"ButtonPrompts\", (\\d+)"
+      },
+      "b": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\\nButtonPrompts=(\\d+)"
+      }
+    },
+    {
+      "name": "CancelGameDeadzone default: code matches ini",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "\"CancelGameDeadzone\", (\\d+)"
+      },
+      "b": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\\nCancelGameDeadzone=(\\d+)"
+      }
+    },
+    {
+      "name": "QuitScreenButtons default: code matches ini",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "\"QuitScreenButtons\", (\\d+)"
+      },
+      "b": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\\nQuitScreenButtons=(\\d+)"
+      }
+    },
+    {
+      "name": "QuitScreenButtons default: ini matches README",
+      "a": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\\nQuitScreenButtons=(\\d+)"
+      },
+      "b": {
+        "file": "README.md",
+        "regex": "\\| `QuitScreenButtons` \\| (\\d+) \\|"
+      }
+    },
+    {
+      "name": "Rumble default: ini matches README",
+      "a": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nRumble=(\\d+)"
+      },
+      "b": {
+        "file": "README.md",
+        "regex": "\\| `Rumble` \\| (\\d+) \\|"
+      }
+    },
+    {
+      "name": "RumbleStrength default: ini matches README",
+      "a": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nRumbleStrength=(\\d+)"
+      },
+      "b": {
+        "file": "README.md",
+        "regex": "\\| `RumbleStrength` \\| (\\d+) \\|"
+      }
+    },
+    {
+      "name": "CancelGameDeadzone default: ini matches README",
+      "a": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nCancelGameDeadzone=(\\d+)"
+      },
+      "b": {
+        "file": "README.md",
+        "regex": "\\| `CancelGameDeadzone` \\| (\\d+) \\|"
+      }
+    },
+    {
+      "name": "InvertAimY default: ini matches README",
+      "a": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nInvertAimY=(\\d+)"
+      },
+      "b": {
+        "file": "README.md",
+        "regex": "\\| `InvertAimY` \\| (\\d+) \\|"
+      }
+    },
+    {
+      "name": "SwapSticks default: ini matches README",
+      "a": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nSwapSticks=(\\d+)"
+      },
+      "b": {
+        "file": "README.md",
+        "regex": "\\| `SwapSticks` \\| (\\d+) \\|"
+      }
+    },
+    {
+      "name": "InputInBackground default: ini matches README",
+      "a": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nInputInBackground=(\\d+)"
+      },
+      "b": {
+        "file": "README.md",
+        "regex": "\\| `InputInBackground` \\| (\\d+) \\|"
+      }
+    },
+    {
+      "name": "ButtonPrompts default: ini matches README",
+      "a": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nButtonPrompts=(\\d+)"
+      },
+      "b": {
+        "file": "README.md",
+        "regex": "\\| `ButtonPrompts` \\| (\\d+) \\|"
+      }
+    },
+    {
+      "name": "LogInput default: ini matches README",
+      "a": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nLogInput=(\\d+)"
+      },
+      "b": {
+        "file": "README.md",
+        "regex": "\\| `LogInput` \\| (\\d+) \\|"
+      }
+    },
+    {
+      "name": "DiagInput default: ini matches README",
+      "a": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nDiagInput=(\\d+)"
+      },
+      "b": {
+        "file": "README.md",
+        "regex": "\\| `DiagInput` \\| (\\d+) \\|"
+      }
+    },
+    {
+      "name": "Enabled default: ini matches README",
+      "a": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nEnabled=(\\d+)"
+      },
+      "b": {
+        "file": "README.md",
+        "regex": "\\| `Enabled` \\| (\\d+) \\|"
+      }
+    },
+    {
+      "name": "InvertAimY default: code matches ini",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "\"InvertAimY\", (\\d+)"
+      },
+      "b": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nInvertAimY=(\\d+)"
+      }
+    },
+    {
+      "name": "SwapSticks default: code matches ini",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "\"SwapSticks\", (\\d+)"
+      },
+      "b": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nSwapSticks=(\\d+)"
+      }
+    },
+    {
+      "name": "InputInBackground default: code matches ini",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "\"InputInBackground\", (\\d+)"
+      },
+      "b": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nInputInBackground=(\\d+)"
+      }
+    },
+    {
+      "name": "LogInput default: code matches ini",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "\"LogInput\", (\\d+)"
+      },
+      "b": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nLogInput=(\\d+)"
+      }
+    },
+    {
+      "name": "DiagInput default: code matches ini",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "\"DiagInput\", (\\d+)"
+      },
+      "b": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nDiagInput=(\\d+)"
+      }
+    },
+    {
+      "name": "Enabled default: code matches ini",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "\"Enabled\", (\\d+)"
+      },
+      "b": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\nEnabled=(\\d+)"
+      }
+    }
+  ]
+}

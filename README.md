@@ -7,7 +7,8 @@ recommended setup for 60 fps and smooth driving.
   aiming, Target Lock and Fire on the triggers (and usable together), d-pad weapon selection.
 - Rumble.
 - On-screen hints show controller buttons ("Press Cross to Save Game") and follow your remapping,
-  including the few hints the game wrote out as keyboard keys ("Press ENTER").
+  including the few hints the game wrote out as keyboard keys ("Press ENTER"; that one is rewritten in
+  memory but has not been seen in game yet).
 - The quit screen ("Are you sure you want to quit? Y/N") takes A/Cross and B/Circle, and shows them.
 - Every action remappable per mode, including actions the PC version only had on the keyboard.
 - The game's own extra stick dead zone removed, so small stick movements register.
@@ -36,7 +37,7 @@ each part was fixed.
    `scripts\TCNYCSDL3Pad.asi`, `scripts\TCNYCSDL3Pad.ini` and `SDL3.dll`.
 3. Start the game. `scripts\TCNYCSDL3Pad.log` is written on every launch.
 
-The first time a controller is used, the plugin also creates `scripts\TCNYCSDL3Pad\QuitGame_Xbox.pct`
+Once a controller is in use, the plugin also creates `scripts\TCNYCSDL3Pad\QuitGame_Xbox.pct`
 and `QuitGame_PlayStation.pct`: copies of the game's quit-screen picture with "Y/N" replaced by
 controller buttons, drawn from your own game files.
 
@@ -75,7 +76,7 @@ Measured while driving through the city (RX 9070 XT, 3840x2160, 60 Hz):
 | New widescreen fix + DXVK | 56-60 fps once warmed up |
 
 With DXVK the first minutes in new areas can freeze for 1-2 seconds while effects compile for the
-first time. The graphics driver caches them for later sessions.
+first time. The graphics driver caches them, so later sessions should freeze less (not measured yet).
 
 On a display faster than 60 Hz, either keep `FrameLimitType = 1`, or put `d3d9.maxFrameRate = 60` in
 a `dxvk.conf` next to `tcnyc.exe` (not tested).
@@ -125,7 +126,8 @@ The `[OnFoot]`, `[Driving]` and `[Menus]` sections assign each action to a butto
 `A B X Y` (or `CROSS CIRCLE SQUARE TRIANGLE`), `LB RB LT RT` (or `L1 R1 L2 R2`), `LS RS`
 (or `L3 R3`), `BACK START GUIDE` (or `CREATE OPTIONS PS`), `DPAD_UP DPAD_DOWN DPAD_LEFT DPAD_RIGHT`,
 `TOUCHPAD`, `MISC`, `PADDLE1`-`PADDLE4`, empty for none. The sticks and d-pad always do what the game
-expects.
+expects. Also accepted: `VIEW` and `SELECT` (Back), `SHARE`, `MENU` (Start), `HOME` (Guide), and `MIC`, `MUTE` and
+`CAPTURE` (Misc).
 
 ## Known issues
 
@@ -145,14 +147,22 @@ Open `scripts\TCNYCSDL3Pad.log`:
   installed` means that part of the game's code was not found in your build. Controls still work.
 - Input stops responding: set `DiagInput=1`, reproduce, quit after about 5 seconds, and read the log.
 
+## Checking
+
+`node tools/check-project.mjs` runs the project checks listed in `.checks.json`: build with no warnings,
+the byte patterns against your `tcnyc.exe`, the offline DirectInput replay, and settings kept in step
+across code, ini and README. It needs Node 18 or later and Python, and the game one folder up.
+
 ## Building
 
-Visual Studio 2022 or newer with the x86 C compiler. Run `build.bat`; the output is
+Visual Studio with the x86 C compiler. `build.bat` and `test\build_test.bat` look for Visual Studio 2026
+(version 18) Community; edit the `vcvarsall.bat` path in them for another edition. Run `build.bat`; the output is
 `build\TCNYCSDL3Pad.asi`. No SDL headers or libraries are needed: the few SDL3 functions used are
 declared in `sdl3_min.h` and loaded from `SDL3.dll` at runtime.
 
 - `test\build_test.bat` builds `test\harness.exe`. It loads the plugin and replays the game's
-  DirectInput calls using the action tables read from your `tcnyc.exe` (path at the top of `harness.c`).
+  DirectInput calls using the action tables read from your `tcnyc.exe` (path at the top of `harness.c`; it
+  reads them at fixed offsets of the original build, unlike the plugin).
 - `gfxdiag\build.bat` builds `TCNYCGfxDiag.asi`, a diagnostic plugin used during development. It
   logs Direct3D 8 texture formats and failures, render-target creators, frame times, time waiting in
   Present and main-thread CPU use. It is not part of the release; drop it into `scripts\` only when

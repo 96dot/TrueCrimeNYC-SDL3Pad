@@ -6,7 +6,7 @@ the game through our own plugins' logs, and testing in game on a DualSense contr
 
 All addresses refer to `tcnyc.exe`, 20,135,936 bytes, MD5 `b7eee2f3f4c2014d235acf238716b495`. Since
 0.4.0 the plugin does not use these addresses directly. It finds each piece of code by byte pattern at
-startup (see section 9), so the addresses here are for reference.
+startup (see section 10), so the addresses here are for reference.
 The executable is protected with SafeDisc: much of the code is normal, but some functions live in an
 extra `.rld` section where calls are rewritten as `push <return>; jmp <target>` with junk bytes in
 between, and some call targets are only known at runtime.
@@ -14,13 +14,14 @@ between, and some call targets are only known at runtime.
 Contents:
 1. [Controller support](#1-controller-support)
 2. [Button prompts](#2-button-prompts)
-3. [The game's hidden stick dead zone](#3-the-games-hidden-stick-dead-zone)
-4. [Frame rate and stutter](#4-frame-rate-and-stutter)
-5. [Picture quality](#5-picture-quality)
-6. [Working alongside the new widescreen fix](#6-working-alongside-the-new-widescreen-fix)
-7. [Still open: dark blobs on walls](#7-still-open-dark-blobs-on-walls)
-8. [Things that were tried and did not help](#8-things-that-were-tried-and-did-not-help)
-9. [Address reference](#9-address-reference)
+3. [Hard-coded key names and the quit screen](#3-hard-coded-key-names-and-the-quit-screen)
+4. [The game's hidden stick dead zone](#4-the-games-hidden-stick-dead-zone)
+5. [Frame rate and stutter](#5-frame-rate-and-stutter)
+6. [Picture quality](#6-picture-quality)
+7. [Working alongside the new widescreen fix](#7-working-alongside-the-new-widescreen-fix)
+8. [Still open: dark blobs on walls](#8-still-open-dark-blobs-on-walls)
+9. [Things that were tried and did not help](#9-things-that-were-tried-and-did-not-help)
+10. [Address reference](#10-address-reference)
 
 ---
 
@@ -125,7 +126,8 @@ console logic turns that into a console pad button. Only the last step, which is
 button into the name of the **default keyboard key** (`0x63ED90`, `const char *(int buttonMask)`,
 reached through a jump stub at `0x4A0090`).
 
-The plugin replaces that function after checking its first 9 bytes. Its version turns the button
+The plugin finds that function by a 33-byte pattern (section 10) and checks the first 9 bytes of the
+button-to-action function it calls, then replaces it. Its version turns the button
 into an action (`0x63EAF0`), looks up the controller button that action is on in the current
 control set (`0x75CCC0`), and returns its name: Xbox names, or PlayStation names when a PlayStation
 pad is in use. Without a controller the original keyboard names are kept. Because of this, prompts
@@ -133,7 +135,7 @@ follow the player's remapping.
 
 ---
 
-### Hard-coded key names and the quit screen (0.4.0)
+## 3. Hard-coded key names and the quit screen
 
 Only two strings in `LangTable.dat` name keys literally: "Press ENTER" and the PC disk-space message
 ending "...or B to free more blocks." (an Xbox leftover). The game reads the whole table in one
@@ -150,7 +152,7 @@ flag is set, counting only presses made after the prompt opened. Its picture-loa
 `0x62B4D0`) is redirected to a copy the plugin draws with GDI. If that load fails it falls back to the
 original, because the game treats a failed load as "quit now".
 
-## 3. The game's hidden stick dead zone
+## 4. The game's hidden stick dead zone
 
 The game's axis reader `0x40C900(axis, deadzone)` takes the byte the input code produced, discards
 anything at or below `deadzone`, and rescales the rest. At least 54 of its 61 call sites pass `0x20`
@@ -162,9 +164,14 @@ With both active, about the first third of stick travel did nothing. `CancelGame
 `32 + value * 95` instead of `value * 127`. The game's rescale then returns exactly the plugin's
 value, so only `StickDeadzone` is felt.
 
+A few call sites (at most 7 of 61) pass a smaller dead zone than `0x20`. For those, the offset of 32 is
+a little more than the game removes, so with `CancelGameDeadzone=1` they respond slightly earlier than
+the rest. This was left as is: the plugin cannot tell which site is reading, and the difference is a few
+percent of stick travel.
+
 ---
 
-## 4. Frame rate and stutter
+## 5. Frame rate and stutter
 
 ### The original timing
 
@@ -225,7 +232,7 @@ per frame, so on a faster display it would run faster than intended. There, keep
 
 ---
 
-## 5. Picture quality
+## 6. Picture quality
 
 The widescreen fix's post-processing defaults made the image hazy:
 - **Bloom** at a fixed 2x intensity;
@@ -237,7 +244,7 @@ The settings used here: `Bloom = 0`, `DistantBlur = 0`, `ConsoleGamma = 1`, `Ant
 
 ---
 
-## 6. Working alongside the new widescreen fix
+## 7. Working alongside the new widescreen fix
 
 After updating to the 2026-05-30 widescreen fix, input misbehaved:
 
@@ -255,7 +262,7 @@ Windows 11's built-in mapper.
 
 ---
 
-## 7. Still open: dark blobs on walls
+## 8. Still open: dark blobs on walls
 
 Dark, soft blobs appear on walls, for example behind the punching bag in the police academy. They move
 with the camera and the player. They are **projected shadows** reaching surfaces far behind the
@@ -268,7 +275,7 @@ Fixing this needs the code that decides which surfaces receive a shadow. It has 
 
 ---
 
-## 8. Things that were tried and did not help
+## 9. Things that were tried and did not help
 
 - **Recycling render targets.** The game creates and destroys several render targets every frame
   (shadow and effect buffers) through `0x63FD60` / `0x63FDA0`: about 250 a second at the menu. A
@@ -283,9 +290,10 @@ Fixing this needs the code that decides which surfaces receive a shadow. It has 
 
 ---
 
-## 9. Address reference
+## 10. Address reference
 
-The patterns the plugin searches for. `??` is any byte, and each must match exactly once:
+The patterns the plugin searches for. `??` is any byte. Each must match exactly once, except the quit
+prompt's key check, which the game has twice: the plugin accepts one to four copies that all use the same flag.
 
 | Feature | Pattern | Taken from it |
 |---|---|---|

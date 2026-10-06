@@ -315,12 +315,16 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
     if (reason == DLL_PROCESS_ATTACH) {
         char *s; void **slot; DWORD old;
         DisableThreadLibraryCalls(h); InitializeCriticalSection(&g_cs); QueryPerformanceFrequency(&g_qpf);
-        GetModuleFileNameA(h, g_log, MAX_PATH); s = strrchr(g_log, '\\'); if (s) s[1] = 0;
         {
-            char ini[MAX_PATH]; lstrcpynA(ini, g_log, MAX_PATH); strcat(ini, "TCNYCGfxDiag.ini");
+            char dir[MAX_PATH], ini[MAX_PATH];
+            DWORD n = GetModuleFileNameA(h, dir, MAX_PATH);
+            if (n == 0 || n >= MAX_PATH) return TRUE;
+            s = strrchr(dir, '\\'); if (s) s[1] = 0; else dir[0] = 0;
+            snprintf(ini, sizeof ini, "%sTCNYCGfxDiag.ini", dir);
+            snprintf(g_log, sizeof g_log, "%sTCNYCGfxDiag.log", dir);
             g_poolOn = GetPrivateProfileIntA("Settings", "RenderTargetPool", 0, ini);
         }
-        strcat(g_log, "TCNYCGfxDiag.log"); DeleteFileA(g_log);
+        DeleteFileA(g_log);
         slot = find_import("d3d8.dll", "Direct3DCreate8");
         if (slot && VirtualProtect(slot, sizeof(void *), PAGE_READWRITE, &old)) {
             o_Create8 = (void *(WINAPI *)(UINT))*slot; *slot = (void *)h_Create8;
