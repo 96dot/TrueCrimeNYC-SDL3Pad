@@ -2,6 +2,46 @@
 
 All notable changes to TCNYCSDL3Pad. Dates are YYYY-MM-DD.
 
+## [0.4.0] - 2026-10-06
+
+### Added
+- **Quit screen works with a controller** (`QuitScreenButtons`, on by default). The quit prompt
+  stops reading DirectInput and asks Windows directly for the Y and N keys (`GetAsyncKeyState` at
+  `0x4A8D57` and `0x4BE3E4`, while flag `0x793359` is set). Those two checks now also answer from the
+  controller: A/Cross = Yes, B/Circle = No. Only presses made after the prompt opened count, so the
+  press that chose "Quit" cannot confirm it by itself. The keyboard keeps working.
+- **Quit screen picture names the buttons.** The prompt is a picture (`Data\Shell\QuitGame.pct`,
+  640x448, with "Y/N" painted in). The plugin draws its own copy from the player's game file,
+  "A: Yes  B: No" or "Cross: Yes  Circle: No" in Trebuchet MS Bold (the closest Windows font to the
+  game's lettering), and hands it to the game's picture loader (`0x648D0D`). No game artwork is shipped
+  with the plugin. If the game cannot load the copy it is given the original, because a failed load
+  of this picture makes the game quit at once.
+- **Hard-coded key names in text.** Only two strings in the game's text table name keys literally:
+  - "Press ENTER" now reads "Press Cross" or "Press A" (the menus' Select button). It falls back
+    to the original if the button's name does not fit;
+  - the PC disk-space message drops the Xbox leftover "or B to free more blocks".
+  The table is caught as the game reads it (overlapped `ReadFile`/`ReadFileEx` on `LangTable.dat`)
+  and the strings are rewritten in place, and back again when no controller is connected.
+  "'Enter' / 'Backspace' / 'Ctrl-Enter'" on the name-typing screen are left alone, since that
+  screen reads the keyboard only.
+
+### Changed
+- **No longer tied to one exe.** The prompt and quit-screen patches used fixed addresses for one
+  build. They now find their code by byte pattern at startup and read the addresses they need from
+  the instructions they find (the current control set, the quit flag, the picture loader). Every
+  pattern must match exactly once, or that feature stays off and the log says so. On the original
+  build every pattern lands on the same address as before. Controller input, rumble, the dead-zone
+  fix and the text fix never depended on addresses.
+- The log's second line names the exe build. The input diagnostics' game-state readings
+  (`DiagInput`) are only taken on the original build.
+
+### Notes
+- Quit screen (picture, Cross = Yes, Circle = No) confirmed working in game on a DualSense, on the
+  build just before the switch to patterns, which resolve to the same addresses.
+- "Press ENTER" is found and rewritten (confirmed in the log) but has not been seen in game yet.
+- Text changes only match the English wording (English and UK folders).
+- Other builds of the game are untested.
+
 ## [0.3.0] - 2026-10-05
 
 ### Added

@@ -6,7 +6,9 @@ recommended setup for 60 fps and smooth driving.
 - Correct controls on modern controllers (Xbox, PlayStation, Switch and most others): right-stick
   aiming, Target Lock and Fire on the triggers (and usable together), d-pad weapon selection.
 - Rumble.
-- On-screen hints show controller buttons ("Press Cross to Save Game") and follow your remapping.
+- On-screen hints show controller buttons ("Press Cross to Save Game") and follow your remapping,
+  including the few hints the game wrote out as keyboard keys ("Press ENTER").
+- The quit screen ("Are you sure you want to quit? Y/N") takes A/Cross and B/Circle, and shows them.
 - Every action remappable per mode, including actions the PC version only had on the keyboard.
 - The game's own extra stick dead zone removed, so small stick movements register.
 - Hot-plug, no stuck or lost buttons.
@@ -17,9 +19,11 @@ each part was fixed.
 
 ## Requirements
 
-- True Crime: New York City, PC. Developed against `tcnyc.exe` 20,135,936 bytes,
-  MD5 `b7eee2f3f4c2014d235acf238716b495`. Controller input works on any build that uses the stock
-  DirectInput code. Button prompts are only enabled on this exact exe (checked at runtime).
+- True Crime: New York City, PC. Developed and tested on `tcnyc.exe` 20,135,936 bytes,
+  MD5 `b7eee2f3f4c2014d235acf238716b495` (SafeDisc retail, April 2006). Nothing is tied to that exact
+  file. Controller input goes through DirectInput itself, and the prompt and quit-screen patches find
+  their code by byte pattern, so other builds with the same code should work. Any feature whose
+  code is not found stays off and the log says so. Only this build has been tested.
 - [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) as `dinput8.dll`. It is
   included with ThirteenAG's widescreen fix (below).
 - `SDL3.dll`, **32-bit (x86)**, version 3.2 or newer. It is included in the release zip, or available
@@ -32,7 +36,11 @@ each part was fixed.
    `scripts\TCNYCSDL3Pad.asi`, `scripts\TCNYCSDL3Pad.ini` and `SDL3.dll`.
 3. Start the game. `scripts\TCNYCSDL3Pad.log` is written on every launch.
 
-To remove: delete those three files.
+The first time a controller is used, the plugin also creates `scripts\TCNYCSDL3Pad\QuitGame_Xbox.pct`
+and `QuitGame_PlayStation.pct`: copies of the game's quit-screen picture with "Y/N" replaced by
+controller buttons, drawn from your own game files.
+
+To remove: delete those files and the `scripts\TCNYCSDL3Pad` folder.
 
 ## Recommended setup
 
@@ -109,6 +117,7 @@ The game was designed for the original Xbox controller. Its Black and White butt
 | `InputInBackground` | 0 | Keep reading the controller when the game is not the active window |
 | `ButtonPrompts` | 1 | 0 keyboard keys, 1 controller buttons while a controller is connected, 2 always |
 | `ButtonNames` | auto | `auto` (PlayStation names for PlayStation pads), `xbox`, `playstation` |
+| `QuitScreenButtons` | 1 | Quit screen takes A/Cross = Yes, B/Circle = No and shows those buttons |
 | `LogInput` | 0 | Log every controller event (troubleshooting) |
 | `DiagInput` | 0 | Log input diagnostics: device reads, the game's button state, a watchdog if the game stops reading input (troubleshooting) |
 
@@ -122,7 +131,6 @@ expects.
 
 - **Dark blobs on some walls.** These are shadows projected too far onto surfaces behind the object
   casting them. The game does this by itself (also with the old fix and on plain Direct3D 8). Not fixed.
-- **The quit screen asks for the Y or N key.** It does not take controller input.
 - **Shader warm-up freezes with DXVK** in the first minutes, as described above.
 
 ## Troubleshooting
@@ -133,7 +141,8 @@ Open `scripts\TCNYCSDL3Pad.log`:
 - `SDL3.dll NOT found`: put the 32-bit `SDL3.dll` next to `tcnyc.exe`.
 - `Controller connected: ...` lists what SDL3 found. `Controls set: on foot (17 actions ...)` means
   the game accepted the virtual controller.
-- `Button prompts: NOT installed`: a different `tcnyc.exe` build. Controls still work.
+- The second line names your exe build. `Button prompts: NOT installed` or `Quit screen buttons: NOT
+  installed` means that part of the game's code was not found in your build. Controls still work.
 - Input stops responding: set `DiagInput=1`, reproduce, quit after about 5 seconds, and read the log.
 
 ## Building
@@ -158,7 +167,8 @@ a virtual `IDirectInputDevice8A`. Its `BuildActionMap` places each action on an 
 device reports only changes, so the game's 10-events-per-frame read never loses data. The same
 device takes the game's force-feedback effect and turns it into rumble. A PC-only function that
 turns console buttons into keyboard key names (`0x63ED90`) is replaced, after checking its bytes, to
-give controller button names. The full write-up is in [docs/HOW-IT-WAS-FIXED.md](docs/HOW-IT-WAS-FIXED.md).
+give controller button names. The two strings that name keys literally are rewritten in the game's
+text table as it is loaded, and the quit screen's Y/N key checks also accept the controller. The full write-up is in [docs/HOW-IT-WAS-FIXED.md](docs/HOW-IT-WAS-FIXED.md).
 
 ## Credits and licences
 

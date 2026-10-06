@@ -21,7 +21,7 @@
 #include <ctype.h>
 #include "sdl3_min.h"
 
-#define VERSION "0.3"
+#define VERSION "0.4"
 
 // ---------------------------------------------------------------------------------------------
 // settings and log
@@ -44,6 +44,8 @@ struct DiagDev;
 static struct DiagDev *diag_add(void *dev, const char *name);
 static void diag_count(void *dev, HRESULT hr, DWORD n);
 static int g_diagOn;
+static void text_update(void); static void quit_pictures_prepare(void);
+static int g_knownBuild;
 
 // ---------------------------------------------------------------------------------------------
 // controller inputs ("sources") the game's actions can be placed on
@@ -293,6 +295,11 @@ static DWORD WINAPI Worker(LPVOID arg) {
                 pSDL_RumbleGamepad(g_pads[g_active].pad, (uint16_t)lo, (uint16_t)hi, want ? 2000 : 0);
                 sentSeq = seq; sentAt = now; rumbling = want;
             }
+        }
+        {
+            static DWORD lastText; static int prepared; DWORD now = GetTickCount();
+            if (now - lastText > 250) { text_update(); lastText = now; }
+            if (!prepared && g_active >= 0) { prepared = 1; quit_pictures_prepare(); }
         }
         pSDL_Delay(2);
     }
@@ -898,8 +905,10 @@ static DWORD WINAPI DiagThread(LPVOID arg) {
     DWORD last = 0xFFFFFFFF, lastReport = GetTickCount(), lastSet = 0xFFFFFFFF, lastWnd = 0xFFFFFFFF; int lines = 0;
     (void)arg;
     for (;;) {
-        DWORD now = GetTickCount(), bits = *(volatile DWORD *)0x0084A904;
-        DWORD set = *(volatile DWORD *)0x0075CCC0, wnd = *(volatile DWORD *)0x00793380, mgr = *(volatile DWORD *)0x0084A8D0;
+        // these game variables were worked out on one build; on any other they read as 0
+        DWORD now = GetTickCount(), bits = g_knownBuild ? *(volatile DWORD *)0x0084A904 : 0;
+        DWORD set = g_knownBuild ? *(volatile DWORD *)0x0075CCC0 : 0, wnd = g_knownBuild ? *(volatile DWORD *)0x00793380 : 0;
+        DWORD mgr = g_knownBuild ? *(volatile DWORD *)0x0084A8D0 : 0;
         static DWORD lastMgr = 0xFFFFFFFF;
         if (mgr != lastMgr) { logf_("game control manager now %08lX", mgr); lastMgr = mgr; }
         if (bits != last && lines < 400) { logf_("game button state %08lX", bits); last = bits; lines++; }
@@ -928,7 +937,7 @@ static DWORD WINAPI DiagThread(LPVOID arg) {
                       InterlockedExchange(&d->events, 0), InterlockedExchange(&d->acq, 0), InterlockedExchange(&d->acqFail, 0), (DWORD)d->lastErr);
             }
             logf_("diag round-robin index %lu of %lu, foreground is game: %d",
-                  *(volatile DWORD *)0x0084A940, *(volatile DWORD *)0x0084A944, game_has_focus());
+                  g_knownBuild ? *(volatile DWORD *)0x0084A940 : 0, g_knownBuild ? *(volatile DWORD *)0x0084A944 : 0, game_has_focus());
             lastReport = now;
         }
         Sleep(5);
@@ -1029,14 +1038,60 @@ static HRESULT WINAPI h_DI8Create(HINSTANCE inst, DWORD ver, REFIID iid, LPVOID 
 }
 
 // ---------------------------------------------------------------------------------------------
+// finding things in tcnyc.exe. Patches locate their code by byte pattern ("??" = any byte) instead
+// of fixed addresses, and read the addresses they need out of the instructions they find, so other
+// builds of the game work where the code is the same. A feature whose pattern is missing stays off.
+// ---------------------------------------------------------------------------------------------
+static BYTE *g_exeBase; static DWORD g_exeStamp;
+static int g_knownBuild;   // the build every address in this file was worked out on (diagnostics only)
+static int parse_pattern(const char *pat, BYTE *bytes, BYTE *mask) {
+    int n = 0;
+    while (*pat && n < 128) {
+        while (*pat == ' ') pat++;
+        if (!*pat) break;
+        if (pat[0] == '?') { bytes[n] = 0; mask[n++] = 0; pat += pat[1] == '?' ? 2 : 1; continue; }
+        bytes[n] = (BYTE)strtoul(pat, NULL, 16); mask[n++] = 1; pat += 2;
+    }
+    return n;
+}
+// all matches in the executable sections (code = 1) or in every section (code = 0); returns the count
+static int find_pattern(const char *pat, int code, BYTE **hits, int maxHits) {
+    BYTE b[128], m[128]; int n = parse_pattern(pat, b, m), found = 0, i;
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(g_exeBase + ((IMAGE_DOS_HEADER *)g_exeBase)->e_lfanew);
+    IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION(nt);
+    for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++) {
+        BYTE *p, *end;
+        if (code && !(sec->Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
+        p = g_exeBase + sec->VirtualAddress; end = p + sec->Misc.VirtualSize;
+        if (end - p < n || IsBadReadPtr(p, end - p)) continue;
+        for (end -= n; p <= end; p++) {
+            int k;
+            if (*p != b[0]) continue;
+            for (k = 1; k < n && (!m[k] || p[k] == b[k]); k++) ;
+            if (k == n) { if (found < maxHits) hits[found] = p; found++; }
+        }
+    }
+    return found;
+}
+static BYTE *find_one(const char *pat, int code) { BYTE *h[2]; return find_pattern(pat, code, h, 2) == 1 ? h[0] : NULL; }
+static void exe_identify(void) {
+    IMAGE_NT_HEADERS *nt;
+    g_exeBase = (BYTE *)GetModuleHandleA(NULL);
+    nt = (IMAGE_NT_HEADERS *)(g_exeBase + ((IMAGE_DOS_HEADER *)g_exeBase)->e_lfanew);
+    g_exeStamp = nt->FileHeader.TimeDateStamp;
+    g_knownBuild = g_exeStamp == 0x4410A579 && nt->OptionalHeader.SizeOfImage == 0x14E7000 && g_exeBase == (BYTE *)0x400000;
+    logf_("tcnyc.exe build %08lX%s", g_exeStamp, g_knownBuild ? " (the build this plugin was developed on)" : " (another build: features are located by pattern)");
+}
+
+// ---------------------------------------------------------------------------------------------
 // button prompts. The game still builds its hints the console way ("press <Xbox button>"); the PC
 // port only turns that button into the name of the default keyboard key at the very end
 // (0x63ED90). That last step is replaced: the button becomes the game action, the action becomes
 // whatever controller button the ini puts it on, and that button's name is shown.
 // ---------------------------------------------------------------------------------------------
-#define VA_PROMPTNAME   0x0063ED90      // const char *__cdecl (int consoleButtonMask)
-#define VA_MASK2ACTION  0x0063EAF0      // int __cdecl (int consoleButtonMask) -> action number
-#define VA_CURSET       0x0075CCC0      // current control set: 0 on foot, 1 driving, 2 menus
+static BYTE *g_vaPromptName;            // const char *__cdecl (int consoleButtonMask)     (0x63ED90 here)
+static BYTE *g_vaMask2Action;           // int __cdecl (int consoleButtonMask) -> action   (0x63EAF0 here)
+static volatile int *g_vaCurSet;        // current control set: 0 on foot, 1 driving, 2 menus (0x75CCC0 here)
 static int g_promptMode = 1, g_promptNames = 0, g_promptsOn;
 static const char *(__cdecl *o_PromptName)(int);
 
@@ -1051,10 +1106,10 @@ static const char *button_name(int btn, int ps) {
 }
 static const char *__cdecl h_PromptName(int mask) {
     static struct { int mask, set; } seen[64]; static int nseen;
-    int set = *(volatile int *)VA_CURSET, app, src, ps, i;
+    int set = *g_vaCurSet, app, src, ps, i;
     const char *r = NULL;
     if (g_promptMode == 2 || (g_promptMode == 1 && g_snap.connected)) {
-        app = ((int (__cdecl *)(int))VA_MASK2ACTION)(mask);
+        app = ((int (__cdecl *)(int))g_vaMask2Action)(mask);
         if (set < 0 || set > 2) set = 0;
         src = app > 0 && app < 256 ? g_map[set][app] : SRC_NONE;
         ps = g_promptNames == 2 || (g_promptNames == 0 && g_psPad);
@@ -1071,25 +1126,285 @@ static const char *__cdecl h_PromptName(int mask) {
     return r;
 }
 static void install_prompts(void) {
-    static const unsigned char expect[9] = {0xA1, 0xC0, 0xCC, 0x75, 0x00, 0x8B, 0x54, 0x24, 0x04};   // mov eax,[75CCC0]; mov edx,[esp+4]
-    static const unsigned char m2a[8] = {0x8B, 0x44, 0x24, 0x04, 0x3D, 0x00, 0x01, 0x00};            // mov eax,[esp+4]; cmp eax,100h
-    unsigned char *p = (unsigned char *)VA_PROMPTNAME, *t; DWORD old;
+    // mov eax,[curSet] / mov edx,[esp+4] / lea / lea / add / push esi / push edi / add / mov edi,[..] / add / push edx / call mask2action
+    static const char *sig = "A1 ?? ?? ?? ?? 8B 54 24 04 8D 0C 80 8D 0C C8 03 C9 56 57 03 C9 8B BC 09 ?? ?? ?? ?? 03 C9 52 E8";
+    static const unsigned char m2a[9] = {0x8B, 0x44, 0x24, 0x04, 0x3D, 0x00, 0x01, 0x00, 0x00};   // mov eax,[esp+4]; cmp eax,100h
+    BYTE *p, *t; DWORD old;
     if (!g_promptMode) { logf_("Button prompts: off (ButtonPrompts=0)"); return; }
-    if (IsBadReadPtr(p, 9) || memcmp(p, expect, 9) || IsBadReadPtr((void *)VA_MASK2ACTION, 8) || memcmp((void *)VA_MASK2ACTION, m2a, 8)) {
-        logf_("Button prompts: NOT installed, this tcnyc.exe is not the expected version"); return;
+    if (!(p = find_one(sig, 1))) { logf_("Button prompts: NOT installed, the game's key-name code was not found in this tcnyc.exe"); return; }
+    g_vaPromptName = p;
+    g_vaCurSet = *(volatile int **)(p + 1);
+    g_vaMask2Action = p + 36 + *(int *)(p + 32);
+    if (IsBadReadPtr(g_vaMask2Action, 9) || memcmp(g_vaMask2Action, m2a, 9) || IsBadReadPtr((void *)g_vaCurSet, 4)) {
+        logf_("Button prompts: NOT installed, the code around the game's key names is not the expected shape"); return;
     }
-    // trampoline for the original: its first instruction, then back into the function
+    // trampoline for the original: its first instruction (an absolute load, safe to move), then back into the function
     t = VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!t) { logf_("Button prompts: NOT installed (no memory)"); return; }
-    memcpy(t, p, 5); t[5] = 0xE9; *(int *)(t + 6) = (int)(VA_PROMPTNAME + 5) - (int)(t + 10);
+    memcpy(t, p, 5); t[5] = 0xE9; *(int *)(t + 6) = (int)(UINT_PTR)(p + 5) - (int)(UINT_PTR)(t + 10);
     o_PromptName = (const char *(__cdecl *)(int))t;
     if (!VirtualProtect(p, 5, PAGE_EXECUTE_READWRITE, &old)) { logf_("Button prompts: NOT installed (error %lu)", GetLastError()); return; }
-    p[0] = 0xE9; *(int *)(p + 1) = (int)(UINT_PTR)h_PromptName - (int)(VA_PROMPTNAME + 5);
+    p[0] = 0xE9; *(int *)(p + 1) = (int)(UINT_PTR)h_PromptName - (int)(UINT_PTR)(p + 5);
     VirtualProtect(p, 5, old, &old);
     FlushInstructionCache(GetCurrentProcess(), p, 5);
     g_promptsOn = 1;
-    logf_("Button prompts: installed (ButtonPrompts=%d, ButtonNames=%s)", g_promptMode,
+    logf_("Button prompts: installed at %p (ButtonPrompts=%d, ButtonNames=%s)", (void *)p, g_promptMode,
           g_promptNames == 1 ? "xbox" : g_promptNames == 2 ? "playstation" : "auto");
+}
+
+static int hook_import(const char *dll, const char *fn, void *hook, void **orig);
+static int prompts_active(void) { return g_promptsOn && (g_promptMode == 2 || (g_promptMode == 1 && g_snap.connected)); }
+static int prompts_ps(void) { return g_promptNames == 2 || (g_promptNames == 0 && g_psPad); }
+
+// ---------------------------------------------------------------------------------------------
+// hard-coded key names in the game's text. Nearly all prompts use $INPUT_...$ tokens (handled
+// above), but two strings in LangTable.dat name keys literally. The table is caught as the game
+// reads it from disk and those strings are rewritten in place (never longer than the original).
+// ---------------------------------------------------------------------------------------------
+typedef struct { char *p; int len; char orig[256]; char now[256]; } TextSite;
+static TextSite g_texts[16]; static int g_ntexts, g_textPad = -1;
+static int g_nLangReads; static void lang_reads_poll(void);
+static HANDLE g_langFiles[8];
+static HANDLE (WINAPI *o_CreateFileA)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+static BOOL (WINAPI *o_ReadFile)(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
+
+static void text_wanted(const TextSite *t, int pad, char *out) {
+    memcpy(out, t->orig, t->len + 1);
+    if (!pad) return;
+    if (!strcmp(t->orig, "Press ENTER")) {         // the menus' Select button
+        int src = g_map[2][0x24]; const char *nm = SRC_KIND(src) == 0x200 ? button_name(SRC_IDX(src), prompts_ps()) : NULL;
+        if (nm && (int)strlen(nm) + 6 <= t->len) snprintf(out, t->len + 1, "Press %s", nm);
+    } else {                                       // "... or B to free more blocks." is an Xbox leftover
+        char *k = strstr(out, " or B to free more blocks.");
+        if (k) memcpy(k, ".", 2);
+    }
+}
+static void text_apply(int mode) {   // 0 = keyboard wording, 1 = Xbox names, 2 = PlayStation names
+    int i, pad = mode != 0;
+    EnterCriticalSection(&g_cs);
+    for (i = 0; i < g_ntexts; i++) {
+        TextSite *t = &g_texts[i]; char want[256];
+        if (!t->p) continue;
+        if (IsBadWritePtr(t->p, t->len + 1) || memcmp(t->p, t->now, t->len + 1)) { t->p = NULL; continue; }   // buffer gone or reused
+        text_wanted(t, pad, want);
+        if (memcmp(want, t->now, t->len + 1)) { memcpy(t->p, want, t->len + 1); memcpy(t->now, want, t->len + 1); }
+    }
+    g_textPad = mode;
+    LeaveCriticalSection(&g_cs);
+}
+static int text_mode(void) { return prompts_active() ? 1 + prompts_ps() : 0; }
+static void text_scan(char *buf, DWORD n) {
+    static const char *targets[] = {"Press ENTER", "or B to free more blocks."};
+    unsigned k; int found = 0;
+    EnterCriticalSection(&g_cs);   // re-entrant; keeps the worker's text_apply out while sites are added
+    for (k = 0; k < sizeof targets / sizeof targets[0]; k++) {
+        size_t tl = strlen(targets[k]); char *p = buf, *end = buf + n;
+        while (p < end && (p = memchr(p, targets[k][0], end - p)) && p + tl < end) {
+            if (!memcmp(p, targets[k], tl)) {
+                char *s = p; int len;
+                while (s > buf && s[-1]) s--;                     // start of this string
+                len = (int)strnlen(s, end - s);
+                if (s + len < end && len < 255 && g_ntexts < 16 && (k != 0 || len == (int)tl)) {
+                    TextSite *t = &g_texts[g_ntexts++];
+                    t->p = s; t->len = len; memcpy(t->orig, s, len + 1); memcpy(t->now, s, len + 1);
+                    found++;
+                    logf_("Game text: found \"%.60s%s\"", s, len > 60 ? "..." : "");
+                }
+                p = s + len;
+            } else p++;
+        }
+    }
+    if (found) { logf_("Game text: %d hard-coded key name(s) found, will show controller buttons", found); text_apply(text_mode()); }
+    LeaveCriticalSection(&g_cs);
+}
+static void text_update(void) {   // worker thread: follow controller connect/disconnect and pad type
+    if (g_nLangReads) lang_reads_poll();
+    if (g_ntexts && text_mode() != g_textPad) text_apply(text_mode());
+}
+static HANDLE WINAPI h_CreateFileA(LPCSTR name, DWORD acc, DWORD share, LPSECURITY_ATTRIBUTES sa, DWORD disp, DWORD fl, HANDLE tmpl) {
+    HANDLE h = o_CreateFileA(name, acc, share, sa, disp, fl, tmpl);
+    int i, isLang;
+    if (h == INVALID_HANDLE_VALUE) return h;
+    isLang = name && strlen(name) >= 13 && !_stricmp(name + strlen(name) - 13, "LangTable.dat");
+    EnterCriticalSection(&g_cs);
+    for (i = 0; i < 8; i++) if (g_langFiles[i] == h) g_langFiles[i] = NULL;   // handle values get reused
+    if (isLang) for (i = 0; i < 8; i++) if (!g_langFiles[i]) { g_langFiles[i] = h; break; }
+    LeaveCriticalSection(&g_cs);
+    return h;
+}
+// The game reads the table with overlapped (asynchronous) I/O, so the data is not there yet when the
+// read call returns. Remember where it is going and let the worker scan it a moment later.
+static struct { char *buf; DWORD n, at; } g_langReads[16]; static int g_nLangReads;
+static BOOL (WINAPI *o_ReadFileEx)(HANDLE, LPVOID, DWORD, LPOVERLAPPED, LPOVERLAPPED_COMPLETION_ROUTINE);
+static void note_lang_read(HANDLE h, LPVOID buf, DWORD n) {
+    int i, lang = 0;
+    if (!buf || !n) return;
+    EnterCriticalSection(&g_cs);
+    for (i = 0; i < 8; i++) if (g_langFiles[i] == h) lang = 1;
+    if (lang && g_nLangReads < 16) { g_langReads[g_nLangReads].buf = buf; g_langReads[g_nLangReads].n = n; g_langReads[g_nLangReads].at = GetTickCount(); g_nLangReads++; }
+    LeaveCriticalSection(&g_cs);
+}
+static BOOL WINAPI h_ReadFile(HANDLE h, LPVOID buf, DWORD n, LPDWORD got, LPOVERLAPPED ov) {
+    note_lang_read(h, buf, n);
+    return o_ReadFile(h, buf, n, got, ov);
+}
+static BOOL WINAPI h_ReadFileEx(HANDLE h, LPVOID buf, DWORD n, LPOVERLAPPED ov, LPOVERLAPPED_COMPLETION_ROUTINE cr) {
+    note_lang_read(h, buf, n);
+    return o_ReadFileEx(h, buf, n, ov, cr);
+}
+static void lang_reads_poll(void) {   // worker thread
+    int i, j;
+    EnterCriticalSection(&g_cs);
+    for (i = 0; i < g_nLangReads; ) {
+        if (GetTickCount() - g_langReads[i].at < 500) { i++; continue; }
+        if (g_diagOn) logf_("diag text table read: %lu bytes at %p", g_langReads[i].n, (void *)g_langReads[i].buf);
+        if (!IsBadReadPtr(g_langReads[i].buf, g_langReads[i].n)) text_scan(g_langReads[i].buf, g_langReads[i].n);
+        for (j = i + 1; j < g_nLangReads; j++) g_langReads[j - 1] = g_langReads[j];
+        g_nLangReads--;
+    }
+    LeaveCriticalSection(&g_cs);
+}
+
+// ---------------------------------------------------------------------------------------------
+// the quit screen. It is a picture (Data\Shell\QuitGame.pct, "Y/N" painted in) and it reads the
+// Y and N keys straight from Windows (GetAsyncKeyState at 0x4A8D57 / 0x4BE3E4) while the prompt
+// flag 0x793359 is set. With a controller in use: A/Cross answers Y, B/Circle answers N, and the
+// game is handed a copy of the picture that names those buttons. The copy is drawn here, from the
+// player's own game file, so no game artwork is shipped with the plugin.
+// ---------------------------------------------------------------------------------------------
+static volatile BYTE *g_vaQuitFlag;     // quit prompt open (0x793359 here)
+static BYTE *g_vaQuitCall;              // the call that loads its picture (0x648D0D here)
+static void *g_vaLoadPicture;           // picture loader (path, 1, 0) (0x62B4D0 here)
+static int g_quitOn = 1, g_quitKeysOk, g_quitPicOk;
+static SHORT (WINAPI *o_GetAsyncKeyState)(int);
+static char g_quitPic[2][MAX_PATH];      // generated pictures: [0] Xbox names, [1] PlayStation names
+
+static int make_quit_picture(int ps, const char *out) {
+    char src[MAX_PATH], *s; HANDLE f; DWORD size, got; BYTE *data; int ok = 0;
+    GetModuleFileNameA(NULL, src, MAX_PATH); s = strrchr(src, '\\'); s = s ? s + 1 : src;
+    snprintf(s, MAX_PATH - (s - src), "Data\\Shell\\QuitGame.pct");
+    f = CreateFileA(src, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) { logf_("Quit screen picture: %s not found", src); return 0; }
+    size = GetFileSize(f, NULL);
+    data = HeapAlloc(GetProcessHeap(), 0, size ? size : 1);
+    if (data && ReadFile(f, data, size, &got, NULL) && got == size && size == 0x80 + 640 * 448 * 4 &&
+        ((DWORD *)data)[0] == 7 && ((DWORD *)data)[1] == ((448u << 16) | 640u) && ((DWORD *)data)[3] == 0x80 && ((DWORD *)data)[6] == 640 * 448 * 4) {
+        BITMAPINFO bi; void *bits; HDC dc = CreateCompatibleDC(NULL); HBITMAP bm; HFONT font, oldf;
+        memset(&bi, 0, sizeof bi);
+        bi.bmiHeader.biSize = sizeof bi.bmiHeader; bi.bmiHeader.biWidth = 640; bi.bmiHeader.biHeight = -448;
+        bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
+        bm = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+        if (bm && bits) {
+            const char *label = ps ? "Cross: Yes     Circle: No" : "A: Yes     B: No";
+            DWORD *px = bits, *orig = (DWORD *)(data + 0x80); int i, x, y, x0 = 640, y0 = 448, x1 = -1, y1 = -1;
+            HGDIOBJ oldb = SelectObject(dc, bm);
+            // draw the label on black, find where its pixels actually are, then place them where "Y/N" was
+            memset(bits, 0, 640 * 448 * 4);
+            font = CreateFontA(-29, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                               ANTIALIASED_QUALITY, VARIABLE_PITCH | FF_SWISS, "Trebuchet MS");   // closest match to the game's lettering
+            oldf = SelectObject(dc, font);
+            SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
+            TextOutA(dc, 20, 20, label, (int)strlen(label));
+            GdiFlush();
+            for (y = 0; y < 120; y++) for (x = 0; x < 640; x++)
+                if ((px[y * 640 + x] & 0xFF) > 96) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+            if (x1 >= 0) {
+                int dx = 324 - (x0 + x1) / 2, dy = 253 - y0;              // centre on the old text, top of capitals at y=253
+                for (y = 247; y < 282; y++) for (x = 286; x < 362; x++) orig[y * 640 + x] = 0xFF000000u;   // remove "Y/N"
+                for (y = y0 - 4; y <= y1 + 4; y++) for (x = x0 - 2; x <= x1 + 2; x++) {
+                    int tx = x + dx, ty = y + dy; DWORD v;
+                    if (y < 0 || x < 0 || tx < 0 || tx >= 640 || ty < 0 || ty >= 448) continue;
+                    v = px[y * 640 + x] & 0xFF;
+                    if (v > (orig[ty * 640 + tx] & 0xFF)) orig[ty * 640 + tx] = 0xFF000000u | v << 16 | v << 8 | v;
+                }
+            }
+            for (i = 0; i < 640 * 448; i++) orig[i] |= 0xFF000000u;
+            SelectObject(dc, oldf); DeleteObject(font); SelectObject(dc, oldb);
+            {
+                HANDLE o = CreateFileA(out, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL); DWORD wr = 0;
+                if (o != INVALID_HANDLE_VALUE) { ok = WriteFile(o, data, size, &wr, NULL) && wr == size; CloseHandle(o); }
+            }
+        }
+        if (bm) DeleteObject(bm);
+        DeleteDC(dc);
+    } else logf_("Quit screen picture: %s is not the expected format", src);
+    if (data) HeapFree(GetProcessHeap(), 0, data);
+    CloseHandle(f);
+    logf_("Quit screen picture (%s names): %s", ps ? "PlayStation" : "Xbox", ok ? "created" : "could NOT be created");
+    return ok;
+}
+static unsigned __cdecl h_LoadQuitPicture(const char *path, int a, int b) {
+    unsigned (__cdecl *load)(const char *, int, int) = (unsigned (__cdecl *)(const char *, int, int))g_vaLoadPicture;
+    if (prompts_active()) {
+        int ps = prompts_ps();
+        if (GetFileAttributesA(g_quitPic[ps]) == INVALID_FILE_ATTRIBUTES) make_quit_picture(ps, g_quitPic[ps]);
+        if (GetFileAttributesA(g_quitPic[ps]) != INVALID_FILE_ATTRIBUTES) {
+            unsigned r = load(g_quitPic[ps], a, b);
+            if (r > 1) return r;
+            logf_("Quit screen: the game could not load %s - showing its own picture", g_quitPic[ps]);
+        }
+    }
+    return load(path, a, b);   // a failed load here would make the game quit straight away, so always fall back
+}
+static SHORT WINAPI h_GetAsyncKeyState(int vk) {
+    SHORT r = o_GetAsyncKeyState(vk);
+    static DWORD lastCall; static uint32_t base[2];
+    if ((vk == 'Y' || vk == 'N') && g_quitKeysOk && *g_vaQuitFlag) {
+        PadSnap s; DWORD now = GetTickCount(); int k = vk == 'N', btn = k ? SDL_GAMEPAD_BUTTON_EAST : SDL_GAMEPAD_BUTTON_SOUTH;
+        get_snap(&s);
+        if (now - lastCall > 300) {   // prompt just opened: only presses made from now on count
+            base[0] = s.presses[SDL_GAMEPAD_BUTTON_SOUTH]; base[1] = s.presses[SDL_GAMEPAD_BUTTON_EAST];
+        }
+        if (vk == 'N') lastCall = now;
+        if (s.live && (s.buttons >> btn & 1) && s.presses[btn] != base[k]) {
+            static int logged;
+            if (logged++ < 4) logf_("Quit screen: %s pressed on the controller", k ? "No" : "Yes");
+            r |= (SHORT)(-32767 - 1);   // "key is down"
+        }
+    }
+    return r;
+}
+static void install_quit_screen(void) {
+    // cmp byte [quitFlag],0 / je / mov esi,[GetAsyncKeyState] / push 'Y' / call esi / test / jns / mov byte [..],1 / push 'N' / call esi
+    static const char *keySig = "80 3D ?? ?? ?? ?? 00 74 ?? 8B 35 ?? ?? ?? ?? 6A 59 FF D6 84 E4 79 ?? C6 05 ?? ?? ?? ?? 01 6A 4E FF D6";
+    BYTE *hits[4], *str, *c; DWORD old; char *s, sig[96]; int n, i;
+    if (!g_quitOn) { logf_("Quit screen buttons: off (QuitScreenButtons=0)"); return; }
+    n = find_pattern(keySig, 1, hits, 4);
+    for (i = 1; i < n && i < 4; i++) if (*(DWORD *)(hits[i] + 2) != *(DWORD *)(hits[0] + 2)) n = 0;   // every copy must use the same flag
+    if (n < 1 || n > 4) { logf_("Quit screen buttons: NOT installed, the quit prompt's key checks were not found in this tcnyc.exe"); return; }
+    g_vaQuitFlag = *(volatile BYTE **)(hits[0] + 2);
+    g_quitKeysOk = hook_import("USER32.dll", "GetAsyncKeyState", (void *)h_GetAsyncKeyState, (void **)&o_GetAsyncKeyState);
+    snprintf(g_quitPic[0], MAX_PATH, "%sTCNYCSDL3Pad", g_dir); CreateDirectoryA(g_quitPic[0], NULL);
+    s = g_quitPic[0] + strlen(g_quitPic[0]);
+    snprintf(g_quitPic[1], MAX_PATH, "%s\\QuitGame_PlayStation.pct", g_quitPic[0]);
+    snprintf(s, MAX_PATH - (s - g_quitPic[0]), "\\QuitGame_Xbox.pct");
+    // the picture: find its file name, then the "push <name> / mov dword [..],1 / call loader" that uses it
+    if ((str = find_one("21 53 48 45 4C 4C 21 5C 51 75 69 74 47 61 6D 65 2E 70 63 74 00", 0))) {   /* "!SHELL!\QuitGame.pct" */
+        DWORD a = (DWORD)(UINT_PTR)str;
+        snprintf(sig, sizeof sig, "68 %02X %02X %02X %02X C7 05 ?? ?? ?? ?? 01 00 00 00 E8", a & 0xFF, a >> 8 & 0xFF, a >> 16 & 0xFF, a >> 24);
+        if ((c = find_one(sig, 1))) {
+            c += 15;
+            g_vaQuitCall = c; g_vaLoadPicture = c + 5 + *(int *)(c + 1);
+            if (VirtualProtect(c, 5, PAGE_EXECUTE_READWRITE, &old)) {
+                *(int *)(c + 1) = (int)((UINT_PTR)h_LoadQuitPicture - (UINT_PTR)(c + 5));
+                VirtualProtect(c, 5, old, &old); FlushInstructionCache(GetCurrentProcess(), c, 5);
+                g_quitPicOk = 1;
+            }
+        }
+    }
+    logf_("Quit screen buttons: %s (%d key check%s), picture: %s", g_quitKeysOk ? "installed" : "FAILED", n, n == 1 ? "" : "s",
+          g_quitPicOk ? "installed" : "NOT installed (its loader was not found)");
+}
+static void quit_pictures_prepare(void) {   // worker thread, once a controller is in use
+    int ps;
+    if (!g_quitPicOk) return;
+    for (ps = 0; ps < 2; ps++) if (GetFileAttributesA(g_quitPic[ps]) == INVALID_FILE_ATTRIBUTES) make_quit_picture(ps, g_quitPic[ps]);
+}
+static void install_text(void) {
+    int a = hook_import("KERNEL32.dll", "CreateFileA", (void *)h_CreateFileA, (void **)&o_CreateFileA);
+    int b = a && hook_import("KERNEL32.dll", "ReadFile", (void *)h_ReadFile, (void **)&o_ReadFile);
+    if (b) hook_import("KERNEL32.dll", "ReadFileEx", (void *)h_ReadFileEx, (void **)&o_ReadFileEx);
+    logf_("Hard-coded key names in text: %s", b ? "watching for the game's text table" : "NOT installed");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1148,6 +1463,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         g_logInput    = GetPrivateProfileIntA("Settings", "LogInput", 0, g_ini);
         g_diagOn      = GetPrivateProfileIntA("Settings", "DiagInput", 0, g_ini);
         g_cancelGameDz = GetPrivateProfileIntA("Settings", "CancelGameDeadzone", 1, g_ini);
+        g_quitOn      = GetPrivateProfileIntA("Settings", "QuitScreenButtons", 1, g_ini);
         g_promptMode  = GetPrivateProfileIntA("Settings", "ButtonPrompts", 1, g_ini);
         {
             char v[32];
@@ -1157,6 +1473,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         logf_("TCNYCSDL3Pad v" VERSION " loaded. Rumble=%d StickDeadzone=%d%% CancelGameDeadzone=%d TriggerThreshold=%d%% InvertAimY=%d SwapSticks=%d",
               g_rumbleOn, (int)(g_deadzone * 100 + .5f), g_cancelGameDz, (int)(g_trigThreshold * 100 + .5f), g_invertAimY, g_swapSticks);
         if (!g_enabled) { logf_("Enabled=0 - doing nothing"); return TRUE; }
+        exe_identify();
         load_maps();
         for (m = 0; m < 3; m++) {
             char line[512]; int n = 0;
@@ -1174,6 +1491,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         else {
             logf_("DirectInput hook: installed");
             install_prompts();
+            if (g_promptsOn) { install_text(); install_quit_screen(); }
             CreateThread(NULL, 0, Worker, NULL, 0, NULL);
             if (g_diagOn) { logf_("Input diagnostics on (DiagInput=1)"); CreateThread(NULL, 0, DiagThread, NULL, 0, NULL); }
         }

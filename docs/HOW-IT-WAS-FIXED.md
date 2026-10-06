@@ -4,7 +4,9 @@ This document records what was wrong with the PC version (Aspyr/Luxoflux, 2006),
 was tracked down, and what the fix does. Everything was worked out by reading `tcnyc.exe`, watching
 the game through our own plugins' logs, and testing in game on a DualSense controller.
 
-All addresses refer to `tcnyc.exe`, 20,135,936 bytes, MD5 `b7eee2f3f4c2014d235acf238716b495`.
+All addresses refer to `tcnyc.exe`, 20,135,936 bytes, MD5 `b7eee2f3f4c2014d235acf238716b495`. Since
+0.4.0 the plugin does not use these addresses directly. It finds each piece of code by byte pattern at
+startup (see section 9), so the addresses here are for reference.
 The executable is protected with SafeDisc: much of the code is normal, but some functions live in an
 extra `.rld` section where calls are rewritten as `push <return>; jmp <target>` with junk bytes in
 between, and some call targets are only known at runtime.
@@ -130,6 +132,23 @@ pad is in use. Without a controller the original keyboard names are kept. Becaus
 follow the player's remapping.
 
 ---
+
+### Hard-coded key names and the quit screen (0.4.0)
+
+Only two strings in `LangTable.dat` name keys literally: "Press ENTER" and the PC disk-space message
+ending "...or B to free more blocks." (an Xbox leftover). The game reads the whole table in one
+overlapped read. The plugin notes the destination buffer of reads on that file, scans it half a
+second later, and rewrites those two strings in place, never longer than the original. The
+"'Enter'", "'Backspace'" and "'Ctrl-Enter' = OK" help on the name-typing screen stays, because that
+screen reads letters from the keyboard only (`GetAsyncKeyState` over A-Z and 0-9 at `0x4BE45E`).
+
+The quit prompt is a picture, `Data\Shell\QuitGame.pct`. It has a 128-byte header (type 7,
+640x448, data size), then BGRA pixels. While it is shown (flag `0x793359`), the game stops reading
+DirectInput and polls `GetAsyncKeyState('Y')` (sets `0x793358`, quit) and `('N')` (clears `0x793359`).
+The plugin's `GetAsyncKeyState` hook adds A/Cross and B/Circle for those two keys only while the
+flag is set, counting only presses made after the prompt opened. Its picture-load call (`0x648D0D` to
+`0x62B4D0`) is redirected to a copy the plugin draws with GDI. If that load fails it falls back to the
+original, because the game treats a failed load as "quit now".
 
 ## 3. The game's hidden stick dead zone
 
@@ -266,6 +285,15 @@ Fixing this needs the code that decides which surfaces receive a shadow. It has 
 
 ## 9. Address reference
 
+The patterns the plugin searches for. `??` is any byte, and each must match exactly once:
+
+| Feature | Pattern | Taken from it |
+|---|---|---|
+| Button prompts | `A1 ?? ?? ?? ?? 8B 54 24 04 8D 0C 80 8D 0C C8 03 C9 56 57 03 C9 8B BC 09 ?? ?? ?? ?? 03 C9 52 E8` | function start; current control set (the `A1` operand); button-to-action function (the call) |
+| Quit screen keys | `80 3D ?? ?? ?? ?? 00 74 ?? 8B 35 ?? ?? ?? ?? 6A 59 FF D6 84 E4 79 ?? C6 05 ?? ?? ?? ?? 01 6A 4E FF D6` | quit flag (2 copies, which must agree) |
+| Quit screen picture | the text `!SHELL!\QuitGame.pct`, then `68 <its address> C7 05 ?? ?? ?? ?? 01 00 00 00 E8` | the picture-load call and the loader |
+
+
 | Address | What |
 |---|---|
 | `0x694C40` / IAT `0x6CC02C` | `DirectInput8Create` thunk / import |
@@ -285,3 +313,6 @@ Fixing this needs the code that decides which surfaces receive a shadow. It has 
 | `0x647E70` | original frame wait |
 | `0x63FA70`, `0x63FD60`, `0x63FDA0` | texture object create / init / recreate |
 | `0x1473990` | token name to number (SafeDisc `.rld` section) |
+| `0x793359` / `0x793358` | quit prompt open / quit confirmed |
+| `0x4A8D57`, `0x4BE3E4` | quit prompt's `GetAsyncKeyState('Y'/'N')` checks |
+| `0x648D0D` | loads `!SHELL!\QuitGame.pct` through `0x62B4D0` |
