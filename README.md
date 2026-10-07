@@ -10,6 +10,8 @@ recommended setup for 60 fps and smooth driving.
   including the few hints the game wrote out as keyboard keys ("Press ENTER"; that one is rewritten in
   memory but has not been seen in game yet).
 - The quit screen ("Are you sure you want to quit? Y/N") takes A/Cross and B/Circle, and shows them.
+  (0.4.1's changes to the quit screen, quick re-presses and the trigger release point are not yet
+  confirmed in game; see the changelog.)
 - Every action remappable per mode, including actions the PC version only had on the keyboard.
 - The game's own extra stick dead zone removed, so small stick movements register.
 - Hot-plug, no stuck or lost buttons.
@@ -35,7 +37,7 @@ each part was fixed.
 1. Install the recommended setup below (or at least the Ultimate ASI Loader).
 2. Extract the release zip into the game folder (next to `tcnyc.exe`). It adds
    `scripts\TCNYCSDL3Pad.asi`, `scripts\TCNYCSDL3Pad.ini` and `SDL3.dll`, plus this read-me, the
-   changelog and the licences in `scripts\TCNYCSDL3Pad\`.
+   changelog, the write-up and the licences in `scripts\TCNYCSDL3Pad\`.
 3. Start the game. `scripts\TCNYCSDL3Pad.log` is written on every launch.
 
 Once a controller is in use, the plugin also creates `scripts\TCNYCSDL3Pad\QuitGame_Xbox.pct`
@@ -127,8 +129,11 @@ The `[OnFoot]`, `[Driving]` and `[Menus]` sections assign each action to a butto
 `A B X Y` (or `CROSS CIRCLE SQUARE TRIANGLE`), `LB RB LT RT` (or `L1 R1 L2 R2`), `LS RS`
 (or `L3 R3`), `BACK START GUIDE` (or `CREATE OPTIONS PS`), `DPAD_UP DPAD_DOWN DPAD_LEFT DPAD_RIGHT`,
 `TOUCHPAD`, `MISC`, `PADDLE1`-`PADDLE4`, empty for none. The sticks and d-pad always do what the game
-expects. Also accepted: `VIEW` and `SELECT` (Back), `SHARE`, `MENU` (Start), `HOME` (Guide), and `MIC`, `MUTE` and
-`CAPTURE` (Misc).
+expects. Also accepted: `NONE` (same as empty), `VIEW`, `SELECT` and `SHARE` (Back), `MENU` (Start), `HOME`
+(Guide), and `MIC`, `MUTE`, `CAPTURE` and `SHARE_XBOX` (Misc, the Xbox Series share button).
+
+"Press ENTER" is rewritten in place and the name must fit in the same room, so it changes to Cross, A,
+B, X, Y, L1/R1 or LB/RB but stays "Press ENTER" with Square, Circle or Triangle on `[Menus] Select`.
 
 ## Known issues
 
@@ -151,13 +156,15 @@ Open `scripts\TCNYCSDL3Pad.log`:
 ## Checking
 
 `node tools/check-project.mjs` runs the project checks listed in `.checks.json`: build with no warnings,
-the byte patterns against your `tcnyc.exe`, the offline DirectInput replay, and settings kept in step
-across code, ini and README. It needs Node 18 or later and Python, and the game one folder up.
+the byte patterns against your `tcnyc.exe`, the offline DirectInput replay, and settings, button names
+and the default layout kept in step across code, ini and README. It needs Node 18 or later and Python;
+the two checks that need the game one folder up are skipped without it. `python tools/package.py` builds
+the release zip.
 
 ## Building
 
-Visual Studio with the x86 C compiler. `build.bat` and `test\build_test.bat` look for Visual Studio 2026
-(version 18) Community; edit the `vcvarsall.bat` path in them for another edition. Run `build.bat`; the output is
+Visual Studio with the x86 C compiler. `build.bat`, `test\build_test.bat` and `gfxdiag\build.bat` look for
+Visual Studio 2026 (version 18) Community; edit the `vcvarsall.bat` path in them for another edition. Run `build.bat`; the output is
 `build\TCNYCSDL3Pad.asi`. No SDL headers or libraries are needed: the few SDL3 functions used are
 declared in `sdl3_min.h` and loaded from `SDL3.dll` at runtime.
 
@@ -177,8 +184,8 @@ slots of DirectInput's own function table in place, hides real controllers from 
 a virtual `IDirectInputDevice8A`. Its `BuildActionMap` places each action on an SDL3 input. The
 device reports only changes, so the game's 10-events-per-frame read never loses data. The same
 device takes the game's force-feedback effect and turns it into rumble. A PC-only function that
-turns console buttons into keyboard key names (`0x63ED90`) is replaced, after checking its bytes, to
-give controller button names. The two strings that name keys literally are rewritten in the game's
+turns console buttons into keyboard key names (`0x63ED90`) is found by byte pattern and replaced,
+after checking the function it calls, to give controller button names. The two strings that name keys literally are rewritten in the game's
 text table as it is loaded, and the quit screen's Y/N key checks also accept the controller. The full write-up is in [docs/HOW-IT-WAS-FIXED.md](docs/HOW-IT-WAS-FIXED.md).
 
 ## Credits and licences

@@ -4,8 +4,9 @@
 - the quit prompt's key check matches (the plugin accepts 1-4 copies) and every copy uses one flag;
 - the quit picture's file name matches once, and the push-and-call that uses it matches once.
 On the build the plugin was developed on, the addresses found must be the known ones.
-The static patterns are read from the C source, so a pattern edited there is checked as edited.
-Needs the game's tcnyc.exe (path as argument, TCNYC_EXE, or one folder up). Without it: exit 2."""
+The patterns and the 9 bytes are read from the C source, so anything edited there is checked as edited.
+Needs the game's tcnyc.exe (path as argument, TCNYC_EXE, or one folder up). Without it: exit 2
+(reported as SKIP)."""
 import hashlib, os, re, struct, sys
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -61,7 +62,9 @@ if len(hits) == 1:
     p = hits[0]
     curset = struct.unpack('<I', read(p + 1))[0]
     m2a = p + 36 + struct.unpack('<i', read(p + 32))[0]
-    check(read(m2a, 9) == bytes.fromhex('8B 44 24 04 3D 00 01 00 00'), f'button-to-action function at {m2a:#x} starts as the plugin expects')
+    m = re.search(r'm2a\[9\] = \{([^}]*)\}', src)
+    want = bytes(int(x, 16) for x in m.group(1).split(',')) if m else b''
+    check(len(want) == 9 and read(m2a, 9) == want, f'button-to-action function at {m2a:#x} starts with the 9 bytes the C source expects')
     if known:
         check((p, curset, m2a) == (0x63ED90, 0x75CCC0, 0x63EAF0), f'known build: {p:#x} / {curset:#x} / {m2a:#x}')
 

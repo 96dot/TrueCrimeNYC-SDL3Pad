@@ -49,7 +49,9 @@ int main(int argc, char **argv) {
     HANDLE h; HMODULE asi; HWND wnd; int k, i, seconds = argc > 2 ? atoi(argv[2]) : 3;
     h = CreateFileA(EXE, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     if (h == INVALID_HANDLE_VALUE) { printf("cannot open tcnyc.exe\n"); return 1; }
-    g_exeSize = GetFileSize(h, NULL); g_exe = malloc(g_exeSize); ReadFile(h, g_exe, g_exeSize, &g_exeSize, NULL); CloseHandle(h);
+    g_exeSize = GetFileSize(h, NULL); g_exe = malloc(g_exeSize);
+    if (!g_exe || !ReadFile(h, g_exe, g_exeSize, &g_exeSize, NULL)) { printf("cannot read tcnyc.exe\n"); return 1; }
+    CloseHandle(h);
 
     asi = LoadLibraryA(argc > 1 ? argv[1] : "TCNYCSDL3Pad.asi");
     printf("plugin loaded: %p\n", (void *)asi);

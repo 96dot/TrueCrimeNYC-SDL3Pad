@@ -38,7 +38,7 @@ This plugin skips the matchmaking. It gives the game one virtual controller, rea
 [size=4][b]Installation[/b][/size]
 [list=1]
 [*]Install ThirteenAG's Widescreen Fix.
-[*]Extract this archive into the game folder (the one with [b]tcnyc.exe[/b]). You'll get [b]scripts\TCNYCSDL3Pad.asi[/b], [b]scripts\TCNYCSDL3Pad.ini[/b] and [b]SDL3.dll[/b], plus the read-me, changelog and licences in [b]scripts\TCNYCSDL3Pad[/b].
+[*]Extract this archive into the game folder (the one with [b]tcnyc.exe[/b]). You'll get [b]scripts\TCNYCSDL3Pad.asi[/b], [b]scripts\TCNYCSDL3Pad.ini[/b] and [b]SDL3.dll[/b], plus the read-me, changelog, write-up and licences in [b]scripts\TCNYCSDL3Pad[/b].
 [*]Play. A log appears at [b]scripts\TCNYCSDL3Pad.log[/b] if you're curious.
 [/list]
 To uninstall, delete those files and the [b]scripts\TCNYCSDL3Pad[/b] folder.

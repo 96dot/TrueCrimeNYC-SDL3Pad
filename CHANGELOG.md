@@ -66,10 +66,52 @@ Fixes from a full review of the plugin: automated checks, three independent read
 - *Some stick reads in the game use a smaller dead zone than 32/127* (logic): true for a few (at most 7 of 61)
   read sites. With `CancelGameDeadzone=1` those respond slightly earlier. Left as is and documented.
 
+### Second review (same version, before release)
+A second round of three independent reviews on the result. Fixed:
+- **A trigger could stay pulled for good** with `TriggerThreshold` set to 5 or less: the release point
+  (threshold minus 5%) fell to zero or below. The release point is now never below half the threshold.
+  Default of 30 was not affected.
+- **A fault while scanning the game's text could have frozen the game.** The scan ran under a lock, and a
+  fault inside it would have skipped the unlock. The fault handling now sits inside the scan, and the
+  lock is released on every path. Never seen; found by reading.
+- Quit pictures are no longer generated when they cannot be shown (`ButtonPrompts=0`), nor on the
+  input thread, nor when the quit buttons could not be installed.
+- A peek read (`DIGDD_PEEK`) no longer counts as the read that clears the quit-screen state.
+- The current-control-set address is only published once the code around it has been checked, so the
+  diagnostics cannot read a wrong address on another build.
+- The text scanner no longer burns a slot on a rejected match, and stops re-scanning a buffer once the
+  strings are found.
+- `SetProperty` checks the structure size like `GetProperty`.
+- The log no longer contains full paths (which can include the Windows user name), and text taken from
+  the game's files is logged without control characters, so a modded file cannot forge log lines.
+- Small leaks closed: SDL3.dll is unloaded when it is the wrong version, thread handles are closed, the
+  prompt trampoline is freed if the patch fails, and the plugin stops cleanly on an over-long path.
+- Readability: one count for the control sets, named constants for 0x80, the axis range and the
+  DirectInput ten-thousandths, the quit-picture geometry explained, the button-name tables documented
+  and counted at compile time, duplicate declaration and a dead flag removed.
+- Checks: exact keyboard and mouse counts in the harness check; the 9 bytes the prompt patch verifies
+  are read from the C source; a new check that the button names and default layout agree between code,
+  ini and README; `ButtonNames` and the Nexus changelog's version are kept in step; a command that
+  cannot run without the game is reported as skipped, not failed; `tools/package.py` builds the release
+  zip with the documentation in `scripts\TCNYCSDL3Pad\` in the repository's layout, so the README's
+  links keep working.
+
+Checked and not acted on:
+- *The text table handle is tracked by value and never cleared on close*: a reused handle value could
+  make the plugin scan an unrelated read buffer. The scan only ever writes inside that buffer and only
+  if it holds exactly the two strings, so the worst case is a wrong string in a buffer that contained
+  the string anyway. Left as is.
+- *"Press ENTER" is only rewritten when the button's name fits*: Cross, A, B, X, Y and the shoulder
+  names do; Square, Circle and Triangle do not, so with those on Select the text stays "Press ENTER".
+  Inherent to rewriting in place; documented in the README.
+- *Two copies of the plugin under different names* would fight over the log and the prompt patch. User
+  error; the second copy logs that its patch was not installed.
+- *The checker runs the project's own commands*: by design, like `npm run`; stated in its header.
+
 ### Tested, and not
 - Tested:
-  - all automated checks pass;
-  - each was broken on purpose once and went red;
+  - all automated checks pass, including the new ones;
+  - each check was broken on purpose once and went red;
   - the plugin loads in the game, installs every feature by pattern, and finds the text table.
 - Not tested in game yet: the quit-screen fixes and the re-press and trigger changes. They need a
   controller in hand.
@@ -85,7 +127,7 @@ Fixes from a full review of the plugin: automated checks, three independent read
 - **Quit screen picture names the buttons.** The prompt is a picture (`Data\Shell\QuitGame.pct`,
   640x448, with "Y/N" painted in). The plugin draws its own copy from the player's game file,
   "A: Yes  B: No" or "Cross: Yes  Circle: No" in Trebuchet MS Bold (the closest Windows font to the
-  game's lettering), and hands it to the game's picture loader (`0x648D0D`). No game artwork is shipped
+  game's lettering), and hands it to the game's picture loader (the call at `0x648D0D` to `0x62B4D0`). No game artwork is shipped
   with the plugin. If the game cannot load the copy it is given the original, because a failed load
   of this picture makes the game quit at once.
 - **Hard-coded key names in text.** Only two strings in the game's text table name keys literally:

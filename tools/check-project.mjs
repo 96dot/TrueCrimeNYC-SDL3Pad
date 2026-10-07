@@ -24,9 +24,16 @@
 // Exit code: 1 if anything FAILED, otherwise 0. WARN is for a human to look at; SKIP says
 // what was missing so that nothing passes by not running.
 //
+// This runs the project's own scripts and .checks.json commands through the shell, like
+// "npm run" does: the project being checked is trusted. Do not point it at a checkout you
+// would not run.
+//
 // .checks.json (optional) puts the project's own checks in the same run:
 //   {
-//     "commands": [ { "name": "end to end", "run": "node tests/e2e.mjs", "optional": false, "timeoutMin": 10 } ],
+//     "commands": [ { "name": "end to end", "run": "node tests/e2e.mjs", "optional": false, "timeoutMin": 10,
+//                     "slow": true, "skipExit": 2 } ],
+//       slow: left out by --quick. skipExit: a command exiting with this code is reported as SKIP
+//       (a missing prerequisite, named by its last line of output), not as FAIL.
 //     "mustExist": [ "LICENSE", "README.md" ],
 //     "inStep": [ { "name": "defaults match",
 //                   "a": { "file": "a.js", "regex": "DEFAULTS = (\\{[^}]*\\})" },
@@ -217,7 +224,8 @@ if (begin('docs')) {
     for (const m of text.matchAll(/\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) {
       const target = m[1].split('#')[0];
       if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('//')) continue;
-      const full = target.startsWith('/') ? path.join(root, target) : path.join(root, path.dirname(f), decodeURIComponent(target));
+      let decoded = target; try { decoded = decodeURIComponent(target); } catch (e) { /* a bare % in the link: use it as written */ }
+      const full = target.startsWith('/') ? path.join(root, target) : path.join(root, path.dirname(f), decoded);
       if (!fs.existsSync(full)) broken.push(`${f} -> ${target}`);
     }
   }
@@ -266,6 +274,7 @@ if (begin('yours') && exists('.checks.json')) {
     if (quick && c.slow) { emit('SKIP', c.name, '--quick'); continue; }
     const r = sh(c.run, [], { shell: true, timeoutMin: c.timeoutMin || 10 });
     const ok = r.status === 0;
+    if (!ok && c.skipExit !== undefined && r.status === c.skipExit) { emit('SKIP', c.name || c.run, lines((r.stdout || '').trim().split('\n').slice(-1).join(''), 1)); continue; }
     emit(ok ? 'PASS' : c.optional ? 'WARN' : 'FAIL', c.name || c.run, ok ? '' : lines((r.stdout || '').split('\n').slice(-8).join('\n') + (r.stderr || ''), 4));
   }
 } else if (wanted('yours')) {

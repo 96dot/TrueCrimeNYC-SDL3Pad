@@ -5,8 +5,9 @@ was tracked down, and what the fix does. Everything was worked out by reading `t
 the game through our own plugins' logs, and testing in game on a DualSense controller.
 
 All addresses refer to `tcnyc.exe`, 20,135,936 bytes, MD5 `b7eee2f3f4c2014d235acf238716b495`. Since
-0.4.0 the plugin does not use these addresses directly. It finds each piece of code by byte pattern at
-startup (see section 10), so the addresses here are for reference.
+0.4.0 the plugin finds each piece of code it patches by byte pattern at startup (see section 10), so
+the addresses here are for reference. The one exception is the `DiagInput` troubleshooting mode, which
+reads a few of the game's variables at fixed addresses and does so only on this build.
 The executable is protected with SafeDisc: much of the code is normal, but some functions live in an
 extra `.rld` section where calls are rewritten as `push <return>; jmp <target>` with junk bytes in
 between, and some call targets are only known at runtime.
@@ -113,8 +114,9 @@ force-feedback axes and implements `IDirectInputEffect`, and its `SetParameters`
 ### Verification
 
 `test/harness.c` loads the plugin the way the ASI loader does and replays the game's DirectInput
-calls with the real action tables read from `tcnyc.exe`. It checks which device each action lands on
-(keyboard 34 / mouse 8 / controller 17 actions on foot) and that the keyboard keeps its bindings.
+calls with the real action tables read from `tcnyc.exe`, printing which device each action lands on.
+`tools/harness_check.py` runs it and checks the counts: controller 17 / 17 / 13 actions on foot /
+driving / menus, keyboard 34 / 32 / 25, mouse 8 / 7 / 7, and that the rumble device is set up.
 
 ---
 
@@ -126,7 +128,7 @@ console logic turns that into a console pad button. Only the last step, which is
 button into the name of the **default keyboard key** (`0x63ED90`, `const char *(int buttonMask)`,
 reached through a jump stub at `0x4A0090`).
 
-The plugin finds that function by a 33-byte pattern (section 10) and checks the first 9 bytes of the
+The plugin finds that function by a 32-byte pattern (section 10) and checks the first 9 bytes of the
 button-to-action function it calls, then replaces it. Its version turns the button
 into an action (`0x63EAF0`), looks up the controller button that action is on in the current
 control set (`0x75CCC0`), and returns its name: Xbox names, or PlayStation names when a PlayStation
@@ -311,6 +313,9 @@ prompt's key check, which the game has twice: the plugin accepts one to four cop
 | `0x63DE70` | per-call input read (one device in rotation, 10 events max) |
 | `0x63E7C8` | action dispatch jump table |
 | `0x84A904` / `0x84A905` | the game's merged pad-style button bits |
+| `0x84A8D0`, `0x793380`, `0x84A940` / `0x84A944` | control manager, input window, device rotation index / count (read by `DiagInput` only) |
+| `0x84A8D0`, `0x793380`, `0x84A940` / `0x84A944` | control manager, input window, device rotation index / count (read by `DiagInput` only) |
+| `0x84A8D0`, `0x793380`, `0x84A940` / `0x84A944` | control manager, input window, device rotation index / count (read by `DiagInput` only) |
 | `0x63EAF0` | console button mask to action number |
 | `0x63ED90` | button mask to key name (replaced by the plugin) |
 | `0x75CCC0` | current control set (0 on foot, 1 driving, 2 menus) |

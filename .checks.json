@@ -18,13 +18,19 @@
     },
     {
       "name": "byte patterns match tcnyc.exe the way the plugin uses them",
-      "run": "python tools/pattern_check.py"
+      "run": "python tools/pattern_check.py",
+      "skipExit": 2
     },
     {
       "name": "offline replay of the game's DirectInput calls",
       "run": "python tools/harness_check.py",
       "slow": true,
-      "timeoutMin": 5
+      "timeoutMin": 5,
+      "skipExit": 2
+    },
+    {
+      "name": "button names and default layout in step (code, ini, README)",
+      "run": "python tools/names_check.py"
     }
   ],
   "inStep": [
@@ -37,6 +43,17 @@
       "b": {
         "file": "CHANGELOG.md",
         "regex": "## \\[(\\d+\\.\\d+\\.\\d+)\\]"
+      }
+    },
+    {
+      "name": "version: code matches the Nexus changelog",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "#define VERSION \"(\\d+\\.\\d+\\.\\d+)\""
+      },
+      "b": {
+        "file": "NEXUS_CHANGELOG.txt",
+        "regex": "\\n(\\d+\\.\\d+\\.\\d+)\\r?\\n"
       }
     },
     {
@@ -323,6 +340,28 @@
       "b": {
         "file": "TCNYCSDL3Pad.ini",
         "regex": "\nEnabled=(\\d+)"
+      }
+    },
+    {
+      "name": "ButtonNames default: code matches ini",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "\"ButtonNames\", \"(\\w+)\""
+      },
+      "b": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\\nButtonNames=(\\w+)"
+      }
+    },
+    {
+      "name": "ButtonNames default: ini matches README",
+      "a": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\\nButtonNames=(\\w+)"
+      },
+      "b": {
+        "file": "README.md",
+        "regex": "\\| `ButtonNames` \\| (\\w+) \\|"
       }
     }
   ]

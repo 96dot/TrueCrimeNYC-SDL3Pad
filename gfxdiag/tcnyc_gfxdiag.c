@@ -1,5 +1,7 @@
-// TCNYCGfxDiag - temporary diagnostic: logs what the game asks Direct3D 8 for (texture formats,
-// format checks, failures) to find out why some walls draw black. No behaviour is changed.
+// TCNYCGfxDiag - development diagnostic, not part of the release: logs what the game asks Direct3D 8
+// for (texture formats, format checks, failures, render-target creators), frame times, time waiting
+// in Present and main-thread CPU use. Changes nothing unless RenderTargetPool=1 is set in its ini,
+// which was an experiment in reusing render targets (it did not help).
 #include <windows.h>
 #include <stdio.h>
 #include <stdarg.h>
