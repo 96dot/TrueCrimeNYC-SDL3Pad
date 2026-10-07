@@ -12,6 +12,8 @@ recommended setup for 60 fps and smooth driving.
 - The quit screen ("Are you sure you want to quit? Y/N") takes A/Cross and B/Circle, and shows them.
   (0.4.1's changes to the quit screen, quick re-presses and the trigger release point are not yet
   confirmed in game; see the changelog.)
+- Loading screen text ("HINT:", the hint, "LOADING..") at a readable size on high resolutions; the
+  game drew it at its 640x480 size, so at 4K it was a fifth of what was intended.
 - Every action remappable per mode, including actions the PC version only had on the keyboard.
 - The game's own extra stick dead zone removed, so small stick movements register.
 - Hot-plug, no stuck or lost buttons.
@@ -122,6 +124,7 @@ The game was designed for the original Xbox controller. Its Black and White butt
 | `ButtonPrompts` | 1 | 0 keyboard keys, 1 controller buttons while a controller is connected, 2 always |
 | `ButtonNames` | auto | `auto` (PlayStation names for PlayStation pads), `xbox`, `playstation` |
 | `QuitScreenButtons` | 1 | Quit screen takes A/Cross = Yes, B/Circle = No and shows those buttons |
+| `LoadingScreenText` | 1 | Loading screen text scaled to the screen height (4.5x at 2160p); 0 = original size |
 | `LogInput` | 0 | Log every controller event (troubleshooting) |
 | `DiagInput` | 0 | Log input diagnostics: device reads, the game's button state, a watchdog if the game stops reading input (troubleshooting) |
 
@@ -186,7 +189,9 @@ device reports only changes, so the game's 10-events-per-frame read never loses 
 device takes the game's force-feedback effect and turns it into rumble. A PC-only function that
 turns console buttons into keyboard key names (`0x63ED90`) is found by byte pattern and replaced,
 after checking the function it calls, to give controller button names. The two strings that name keys literally are rewritten in the game's
-text table as it is loaded, and the quit screen's Y/N key checks also accept the controller. The full write-up is in [docs/HOW-IT-WAS-FIXED.md](docs/HOW-IT-WAS-FIXED.md).
+text table as it is loaded, and the quit screen's Y/N key checks also accept the controller. The
+loading screen's three text calls are wrapped to switch on the scaling matrix the game's own text
+function already supports. The full write-up is in [docs/HOW-IT-WAS-FIXED.md](docs/HOW-IT-WAS-FIXED.md).
 
 ## Credits and licences
 

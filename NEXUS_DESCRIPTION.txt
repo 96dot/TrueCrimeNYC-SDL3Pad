@@ -21,6 +21,7 @@ This plugin skips the matchmaking. It gives the game one virtual controller, rea
 [*][b]Rumble[/b] from the game's own force feedback.
 [*][b]Button prompts[/b]: "Press Create to Show Badge" instead of "Press 'Q' to Show Badge". Xbox or PlayStation names are picked automatically, and they follow your remapping.
 [*][b]Quit screen[/b] answers to Cross/A (Yes) and Circle/B (No), and shows those buttons instead of "Y/N".
+[*][b]Readable loading screens[/b]: the hint and "LOADING.." text were drawn at their 640x480 size, so at 4K they were tiny. They now scale with your resolution.
 [*][b]The game's hidden extra stick dead zone removed[/b]. The game threw away the first quarter of each stick axis on top of any dead zone; small movements now count.
 [*][b]Fully remappable[/b] per mode (on foot, driving, menus) in a plain ini file. Spare buttons can even take keyboard-only actions like Stealth, Endo and Wheelie.
 [*][b]Hot-plug[/b]: connect or swap controllers any time; the last one you pressed is in charge.

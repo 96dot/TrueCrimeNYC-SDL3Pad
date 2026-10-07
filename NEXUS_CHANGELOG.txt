@@ -1,5 +1,8 @@
 Nexus changelog entries (one block per version; paste each line as a change)
 
+0.5.0
+- Loading screen text ("HINT:", the hint and "LOADING..") is now drawn at a size that matches your resolution instead of the tiny 640x480 size (4.5x at 4K). LoadingScreenText=0 in the ini restores the original.
+
 0.4.1
 - Quit screen: answering No with Circle/B no longer also presses B in the menu behind it.
 - Quit screen: reopening it quickly can no longer confirm Yes by itself.

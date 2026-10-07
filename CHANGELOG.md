@@ -2,6 +2,25 @@
 
 All notable changes to TCNYCSDL3Pad. Dates are YYYY-MM-DD.
 
+## [0.5.0] - 2026-10-06
+
+### Added
+- **Loading screen text at a readable size** (`LoadingScreenText`, on by default). The loading screen
+  placed "HINT:", the hint and "LOADING.." at fractions of the screen but drew the letters at the
+  font's 640x480 size, so at 3840x2160 they were 4.5 times too small. The game's text function can
+  already draw through a scaling matrix kept in the font object, and the game uses it elsewhere; the
+  plugin switches it on for those three calls only, at screen height / 480, and scales the two gaps the
+  screen measures in unscaled pixels (under the line, and the hint's wrap width) to match. The font is
+  put back after each call. Found by pattern like the other patches; at 480 lines or fewer nothing
+  changes.
+
+### Tested, and not
+- Tested:
+  - in game at 3840x2160: both loading screens (start-up and loading a save) show the text at the new
+    size, confirmed by eye on a DualSense setup; the log shows all three calls drawn at 4.50x;
+  - all automated checks pass, including the new patterns.
+- Not tested: other resolutions (1080p would be 2.25x, 1440p 3x), ultrawide, and other builds of the game.
+
 ## [0.4.1] - 2026-10-06
 
 Fixes from a full review of the plugin: automated checks, three independent read-only reviews

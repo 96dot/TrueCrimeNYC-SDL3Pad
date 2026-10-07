@@ -21,7 +21,7 @@
 #include <ctype.h>
 #include "sdl3_min.h"
 
-#define VERSION "0.4.1"
+#define VERSION "0.5.0"
 
 // ---------------------------------------------------------------------------------------------
 // settings and log
@@ -1531,6 +1531,82 @@ static void quit_pictures_prepare(void) {   // once a controller is in use, if t
     if (!g_quitPicOk || !g_promptMode) return;
     if ((t = CreateThread(NULL, 0, PrepareThread, NULL, 0, NULL))) CloseHandle(t);
 }
+// ---------------------------------------------------------------------------------------------
+// loading screen text. The loading screen places "HINT:", the hint and "LOADING.." at fractions of
+// the screen size but draws them at the font's own pixel size, made for 640x480, so at 4K the
+// letters are a fifth of their intended size. The game's text function (0x61BAB0 on the original
+// build) can draw through a 2x2 matrix kept in the font object (flag 0x01 at +0x22, matrix at
+// +0x10, laid out x-scale, 0, 0, y-scale); the game itself uses it to squeeze long names (0x4397BA).
+// Those three calls are wrapped: the matrix is set to screen height / 480 for the call, and the
+// two distances the screen adds in unscaled pixels (the gap under the line, the hint's wrap width)
+// are scaled to match. Everything is put back after each call.
+// ---------------------------------------------------------------------------------------------
+typedef int (__fastcall *TextFn)(BYTE *font, void *edx, void *ctx, float x, float y, float z, const char *text, int count);
+enum { LT_HINT, LT_BODY, LT_LOADING, NLT };
+static TextFn o_LoadText[NLT];
+static volatile int *g_vaScreenH;       // the game's screen height (0x9255F8 on the original build)
+static BYTE **g_vaHintFont;             // the font "HINT:" is drawn with (0x79333C there)
+static int g_loadTextOn = 1;
+#define FONT_MATRIX(f) ((float *)((f) + 0x10))
+#define FONT_FLAGS(f)  ((f)[0x22])
+#define FONT_WRAP(f)   (*(WORD *)((f) + 0x24))
+#define FONT_HEIGHT(f) ((*(BYTE **)(f))[0x2a])   // line height of the font's glyph set, in pixels
+static int draw_load_text(int kind, BYTE *font, void *ctx, float x, float y, float z, const char *text, int count) {
+    static int logged[NLT];
+    float sc = g_vaScreenH ? *g_vaScreenH / 480.f : 1.f, m[4]; BYTE flags; WORD wrap; int r;
+    if (sc < 1.05f || !font) return o_LoadText[kind](font, NULL, ctx, x, y, z, text, count);   // 480p or less: as designed
+    memcpy(m, FONT_MATRIX(font), sizeof m); flags = FONT_FLAGS(font); wrap = FONT_WRAP(font);
+    if (kind == LT_HINT) y += 8 * (sc - 1);                     // the screen puts it 8 px under the line
+    if (kind == LT_BODY) {                                     // 8 px plus one line of "HINT:" under the line
+        BYTE *hf = g_vaHintFont ? *g_vaHintFont : NULL;
+        y += (8 + (hf ? FONT_HEIGHT(hf) : 0)) * (sc - 1);
+        if (wrap) FONT_WRAP(font) = (WORD)(wrap / sc);          // the wrap width is measured in unscaled glyphs
+    }
+    FONT_MATRIX(font)[0] = sc; FONT_MATRIX(font)[1] = 0; FONT_MATRIX(font)[2] = 0; FONT_MATRIX(font)[3] = sc;
+    FONT_FLAGS(font) |= 1;
+    r = o_LoadText[kind](font, NULL, ctx, x, y, z, text, count);
+    memcpy(FONT_MATRIX(font), m, sizeof m); FONT_FLAGS(font) = flags; FONT_WRAP(font) = wrap;
+    if (!logged[kind]++) logf_("Loading screen: %s drawn at %.2fx (screen height %d)",
+                               kind == LT_HINT ? "\"HINT:\"" : kind == LT_BODY ? "the hint" : "\"LOADING\"", sc, *g_vaScreenH);
+    return r;
+}
+static int __fastcall h_LoadHint(BYTE *f, void *e, void *c, float x, float y, float z, const char *t, int n) { (void)e; return draw_load_text(LT_HINT, f, c, x, y, z, t, n); }
+static int __fastcall h_LoadBody(BYTE *f, void *e, void *c, float x, float y, float z, const char *t, int n) { (void)e; return draw_load_text(LT_BODY, f, c, x, y, z, t, n); }
+static int __fastcall h_LoadWord(BYTE *f, void *e, void *c, float x, float y, float z, const char *t, int n) { (void)e; return draw_load_text(LT_LOADING, f, c, x, y, z, t, n); }
+static void install_loading_text(void) {
+    // the three calls: mov ecx,[font] / call text / and what follows each one
+    static const char *sites[NLT] = {
+        "8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 8B 15 ?? ?? ?? ?? 2B 7C 24 10 C7 84 24 30 05 00 00 80 80 80 80 C6 42 26 00",
+        "8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? A1 ?? ?? ?? ?? 80 60 22 DF",
+        "8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 8B 15 ?? ?? ?? ?? C6 42 26 00 83 BE 90 00 00 00 00",
+    };
+    // the loading screen reads the screen size at its start: call width / mov [esp+2C],eax / call height / mov [esp+28],eax
+    static const char *sizeSig = "E8 ?? ?? ?? ?? 89 44 24 2C E8 ?? ?? ?? ?? 89 44 24 28 E8";
+    static void *hooks[NLT] = {(void *)h_LoadHint, (void *)h_LoadBody, (void *)h_LoadWord};
+    BYTE *c[NLT], *sz, *getH, *text = NULL; DWORD old; int k;
+    if (!g_loadTextOn) { logf_("Loading screen text: off (LoadingScreenText=0)"); return; }
+    for (k = 0; k < NLT; k++) {
+        if (!(c[k] = find_one(sites[k], 1))) { logf_("Loading screen text: NOT installed, call %d was not found in this tcnyc.exe", k + 1); return; }
+        if (!text) text = c[k] + 11 + *(int *)(c[k] + 7);
+        else if (c[k] + 11 + *(int *)(c[k] + 7) != text) { logf_("Loading screen text: NOT installed, the three calls do not go to one function"); return; }
+    }
+    sz = find_one(sizeSig, 1);
+    getH = sz ? sz + 14 + *(int *)(sz + 10) : NULL;
+    if (!getH || IsBadReadPtr(getH, 6) || getH[0] != 0xA1 || getH[5] != 0xC3) {   // mov eax,[height] / ret
+        logf_("Loading screen text: NOT installed, the screen-size code was not found"); return;
+    }
+    g_vaScreenH = *(volatile int **)(getH + 1);
+    g_vaHintFont = *(BYTE ***)(c[LT_HINT] + 2);
+    if (IsBadReadPtr((void *)g_vaScreenH, 4) || IsBadReadPtr(g_vaHintFont, 4)) { logf_("Loading screen text: NOT installed (unexpected addresses)"); g_vaScreenH = NULL; return; }
+    for (k = 0; k < NLT; k++) {
+        BYTE *call = c[k] + 6;
+        o_LoadText[k] = (TextFn)(call + 5 + *(int *)(call + 1));
+        if (!VirtualProtect(call, 5, PAGE_EXECUTE_READWRITE, &old)) { logf_("Loading screen text: NOT installed (error %lu)", GetLastError()); return; }
+        *(int *)(call + 1) = (int)((UINT_PTR)hooks[k] - (UINT_PTR)(call + 5));
+        VirtualProtect(call, 5, old, &old); FlushInstructionCache(GetCurrentProcess(), call, 5);
+    }
+    logf_("Loading screen text: installed (scaled to the screen height)");
+}
 static void install_text(void) {
     int a = hook_import("KERNEL32.dll", "CreateFileA", (void *)h_CreateFileA, (void **)&o_CreateFileA);
     int b = a && hook_import("KERNEL32.dll", "ReadFile", (void *)h_ReadFile, (void **)&o_ReadFile);
@@ -1598,6 +1674,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         g_cancelGameDz = GetPrivateProfileIntA("Settings", "CancelGameDeadzone", 1, g_ini);
         g_quitOn      = GetPrivateProfileIntA("Settings", "QuitScreenButtons", 1, g_ini);
         g_promptMode  = GetPrivateProfileIntA("Settings", "ButtonPrompts", 1, g_ini);
+        g_loadTextOn  = GetPrivateProfileIntA("Settings", "LoadingScreenText", 1, g_ini);
         {
             char v[32];
             GetPrivateProfileStringA("Settings", "ButtonNames", "auto", v, sizeof v, g_ini);
@@ -1626,6 +1703,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
             install_prompts();
             if (g_promptMode) install_text();
             install_quit_screen();   // its buttons work with ButtonPrompts=0 too; only its picture follows ButtonPrompts
+            install_loading_text();
             if ((t = CreateThread(NULL, 0, Worker, NULL, 0, NULL))) CloseHandle(t);
             if (g_diagOn) { logf_("Input diagnostics on (DiagInput=1)"); if ((t = CreateThread(NULL, 0, DiagThread, NULL, 0, NULL))) CloseHandle(t); }
         }

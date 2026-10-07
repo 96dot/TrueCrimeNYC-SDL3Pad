@@ -363,6 +363,28 @@
         "file": "README.md",
         "regex": "\\| `ButtonNames` \\| (\\w+) \\|"
       }
+    },
+    {
+      "name": "LoadingScreenText default: code matches ini",
+      "a": {
+        "file": "tcnyc_sdl3pad.c",
+        "regex": "\"LoadingScreenText\", (\\d+)"
+      },
+      "b": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\\nLoadingScreenText=(\\d+)"
+      }
+    },
+    {
+      "name": "LoadingScreenText default: ini matches README",
+      "a": {
+        "file": "TCNYCSDL3Pad.ini",
+        "regex": "\\nLoadingScreenText=(\\d+)"
+      },
+      "b": {
+        "file": "README.md",
+        "regex": "\\| `LoadingScreenText` \\| (\\d+) \\|"
+      }
     }
   ]
 }

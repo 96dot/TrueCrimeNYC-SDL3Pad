@@ -244,6 +244,26 @@ The widescreen fix's post-processing defaults made the image hazy:
 The settings used here: `Bloom = 0`, `DistantBlur = 0`, `ConsoleGamma = 1`, `AntiAliasing = 1` (SMAA),
 `HighResolutionShadows = 1`.
 
+### Loading screen text (0.5.0)
+
+At 3840x2160 the loading screen's badge and layout filled the screen, but "HINT:", the hint and
+"LOADING.." were tiny. The loading screen (`0x499330`) places them at fractions of the screen size it
+reads at the start (`0x647E00` width, `0x647E10` height, which read `0x9255F4` / `0x9255F8`), then draws
+them with the game's text function (`0x61BAB0`, a `thiscall` on a font object: context, x, y, depth,
+text, count) at the font's own pixel size, which was made for 640x480. At 2160p that is 4.5 times too
+small.
+
+The text function can draw through a 2x2 matrix kept in the font object: flag `0x01` at `+0x22` turns
+it on, and the matrix at `+0x10` is laid out x-scale, 0, 0, y-scale. It transforms the starting point
+back through the inverse, so the text still starts where the caller asked and only the glyphs grow.
+The game itself uses it to squeeze long names (`0x4397BA`).
+
+The plugin rewrites the three calls (`0x499D8C` "HINT:", `0x499DFA` the hint, `0x499EC1` "LOADING..")
+to go through a wrapper that sets the matrix to screen height / 480 for that one call and puts the font
+back afterwards. Two distances the loading screen adds in unscaled pixels are scaled with it: the 8
+pixels under the line (and, for the hint, the height of "HINT:" above it), and the hint's wrap width,
+which the function measures in unscaled glyphs. At 480 lines or fewer nothing changes.
+
 ---
 
 ## 7. Working alongside the new widescreen fix
@@ -302,6 +322,10 @@ prompt's key check, which the game has twice: the plugin accepts one to four cop
 | Button prompts | `A1 ?? ?? ?? ?? 8B 54 24 04 8D 0C 80 8D 0C C8 03 C9 56 57 03 C9 8B BC 09 ?? ?? ?? ?? 03 C9 52 E8` | function start; current control set (the `A1` operand); button-to-action function (the call) |
 | Quit screen keys | `80 3D ?? ?? ?? ?? 00 74 ?? 8B 35 ?? ?? ?? ?? 6A 59 FF D6 84 E4 79 ?? C6 05 ?? ?? ?? ?? 01 6A 4E FF D6` | quit flag (2 copies, which must agree) |
 | Quit screen picture | the text `!SHELL!\QuitGame.pct`, then `68 <its address> C7 05 ?? ?? ?? ?? 01 00 00 00 E8` | the picture-load call and the loader |
+| Loading screen "HINT:" | `8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 8B 15 ?? ?? ?? ?? 2B 7C 24 10 C7 84 24 30 05 00 00 80 80 80 80 C6 42 26 00` | the call; the "HINT:" font (the `8B 0D` operand) |
+| Loading screen hint | `8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? A1 ?? ?? ?? ?? 80 60 22 DF` | the call |
+| Loading screen "LOADING.." | `8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 8B 15 ?? ?? ?? ?? C6 42 26 00 83 BE 90 00 00 00 00` | the call (all three must reach one function) |
+| Screen size | `E8 ?? ?? ?? ?? 89 44 24 2C E8 ?? ?? ?? ?? 89 44 24 28 E8` | the height getter, which must be `mov eax,[height]; ret` |
 
 
 | Address | What |
@@ -329,3 +353,6 @@ prompt's key check, which the game has twice: the plugin accepts one to four cop
 | `0x793359` / `0x793358` | quit prompt open / quit confirmed |
 | `0x4A8D57`, `0x4BE3E4` | quit prompt's `GetAsyncKeyState('Y'/'N')` checks |
 | `0x648D0D` | loads `!SHELL!\QuitGame.pct` through `0x62B4D0` |
+| `0x499330` | loading screen (hint, "LOADING..") |
+| `0x61BAB0` | draw text with a font (`thiscall`: context, x, y, depth, text, count; matrix at font `+0x10`, flags `+0x22`, wrap width `+0x24`) |
+| `0x647E00` / `0x647E10` | screen width / height (`0x9255F4` / `0x9255F8`) |

@@ -2,7 +2,9 @@
 - the key-name pattern matches once, its call leads to the button-to-action function (whose first
   9 bytes the plugin also checks), and its first operand is the current-control-set variable;
 - the quit prompt's key check matches (the plugin accepts 1-4 copies) and every copy uses one flag;
-- the quit picture's file name matches once, and the push-and-call that uses it matches once.
+- the quit picture's file name matches once, and the push-and-call that uses it matches once;
+- the loading screen's three text calls match once each and reach one function, and the screen-size
+  pattern leads to a `mov eax,[height]; ret` getter.
 On the build the plugin was developed on, the addresses found must be the known ones.
 The patterns and the 9 bytes are read from the C source, so anything edited there is checked as edited.
 Needs the game's tcnyc.exe (path as argument, TCNYC_EXE, or one folder up). Without it: exit 2
@@ -90,6 +92,30 @@ if len(name) == 1:
         call = hits[0] + 15
         loader = call + 5 + struct.unpack('<i', read(call + 1))[0]
         check((call, loader) == (0x648D0D, 0x62B4D0), f'known build: call {call:#x}, loader {loader:#x}')
+
+# loading screen text: three calls to one function, the "HINT:" font, the screen-height getter
+lit = re.search(r'static const char \*sites\[NLT\] = \{(.*?)\};', src, re.S)
+sites = re.findall(r'"([0-9A-F? ]+)"', lit.group(1)) if lit else []
+check(len(sites) == 3, f'loading screen: {len(sites)} call patterns read from the C source')
+targets, calls = set(), []
+for i, sp in enumerate(sites):
+    h = scan(sp, True)
+    check(len(h) == 1, f'loading screen call {i + 1} matches once ({len(h)})')
+    if len(h) == 1:
+        call = h[0] + 6; calls.append(call)
+        targets.add(call + 5 + struct.unpack('<i', read(call + 1))[0])
+check(len(targets) == 1, f'loading screen calls all reach one function {[hex(t) for t in targets]}')
+m = re.search(r'sizeSig = "([0-9A-F? ]+)"', src)
+h = scan(m.group(1), True) if m else []
+check(len(h) == 1, f'screen-size pattern matches once ({len(h)})')
+if len(h) == 1:
+    geth = h[0] + 14 + struct.unpack('<i', read(h[0] + 10))[0]
+    b = read(geth, 6)
+    check(b[0] == 0xA1 and b[5] == 0xC3, f'height getter at {geth:#x} is mov eax,[..]; ret')
+    if known:
+        check((geth, struct.unpack('<I', b[1:5])[0]) == (0x647E10, 0x9255F8), f'known build: height getter {geth:#x}')
+if known and len(calls) == 3:
+    check(calls == [0x499D8C, 0x499DFA, 0x499EC1] and targets == {0x61BAB0}, f'known build: calls {[hex(c) for c in calls]} to {[hex(t) for t in targets]}')
 
 print('all patterns check out' + (' (and match the known build)' if known else '') if not fails else f'{len(fails)} problem(s)')
 sys.exit(1 if fails else 0)
